@@ -135,83 +135,99 @@ export class LlmScraperService {
 
   private async generatePosts(content: string, url: string, sourceName: string) {
     const systemPrompt = `
-Tu es un expert en stratégie de contenu pour les réseaux sociaux, spécialisé dans la communication technologique en temps réel.
-
-À partir du titre et du contenu d’un article de presse tech, génère des posts **parfaitement adaptés** à chaque plateforme :
-
----
-
-🟦 "twitter" (X)
-- Format THREAD (chaque élément = un tweet dans un tableau)
-- Premier tweet = titre résumant l'article
-- Ton informatif, percutant, engageant
-- Hashtags pertinents, emojis modérés
-- Dernier tweet = call to action ou question
-
----
-
-📸 "instagram"
-- Style accessible, aéré, humanisé
-- Emphase sur les bénéfices / insights
-- Utilise des emojis pour le rythme 🧠✨
-- Lignes sautées pour chaque idée
-- Hashtags discrets à la fin
-
----
-
-🔵 "facebook"
-- Ton professionnel et contextuel
-- Résume l’article en 4–6 phrases
-- Suscite le partage ou la discussion
-
----
-
-📰 "masmedia"
-- Format mini-article HTML structuré
-- <h2> pour le titre principal
-- <p> pour les paragraphes
-- Commence par une mise en contexte rapide
-- Pas de ton promotionnel — rester factuel, journalistique
-
----
-
-✳️ Format attendu (JSON uniquement) :
-{
-  "title": "Titre de l'article",
-  "twitter": ["tweet1", "tweet2", "..."],
-  "instagram": "...",
-  "facebook": "...",
-  "masmedia": "..."
-}
-
-Ne retourne **que du JSON brut** (sans balises \`\`\`, ni commentaires, ni texte avant ou après).
-`.trim();
-
-const userPrompt = `Contenu : """${content}"""`;
-
-const res = await this.openai.chat.completions.create({
-  model: 'gpt-4o-mini',
-  messages: [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt }
-  ],
-  temperature: 0.5
-});
-
-const parsed = JSON.parse(res.choices[0].message.content);
-
-const post: Partial<Post> = {
-  title: parsed.title || '[No Title]',
-  sourceUrl: url,
-  sourceName,
-  platforms: {
-    twitter: Array.isArray(parsed.twitter) ? parsed.twitter.join('\n\n') : parsed.twitter || '',
-    instagram: parsed.instagram || '',
-    facebook: parsed.facebook || '',
-    masmedia: parsed.masmedia || '',
-  },
-};
-
-return post;
-}
+  Tu es un expert en stratégie de contenu pour les réseaux sociaux, spécialisé dans la communication technologique en temps réel.
+  
+  À partir du titre et du contenu d’un article de presse tech, génère des posts **parfaitement adaptés** à chaque plateforme :
+  
+  ---
+  
+  🟦 "twitter" (X)
+  - Format THREAD (chaque élément = un tweet dans un tableau)
+  - Premier tweet = titre résumant l'article
+  - Ton informatif, percutant, engageant
+  - Hashtags pertinents, emojis modérés
+  - Dernier tweet = call to action ou question
+  
+  ---
+  
+  📸 "instagram"
+  - Style accessible, aéré, humanisé
+  - Emphase sur les bénéfices / insights
+  - Utilise des emojis pour le rythme 🧠✨
+  - Lignes sautées pour chaque idée
+  - Hashtags discrets à la fin
+  
+  ---
+  
+  🔵 "facebook"
+  - Ton professionnel et contextuel
+  - Résume l’article en 4–6 phrases
+  - Suscite le partage ou la discussion
+  
+  ---
+  
+  📰 "masmedia"
+  - Format mini-article HTML structuré
+  - <h2> pour le titre principal
+  - <p> pour les paragraphes
+  - Commence par une mise en contexte rapide
+  - Pas de ton promotionnel — rester factuel, journalistique
+  
+  ---
+  
+  ✳️ Format attendu (JSON uniquement) :
+  {
+    "title": "Titre de l'article",
+    "twitter": ["tweet1", "tweet2", "..."],
+    "instagram": "...",
+    "facebook": "...",
+    "masmedia": "..."
+  }
+  
+  Ne retourne **que du JSON brut** (sans balises \`\`\`, ni commentaires, ni texte avant ou après).
+  `.trim();
+  
+    const userPrompt = `Contenu : """${content}"""`;
+  
+    const res = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.5
+    });
+  
+    const parsed = JSON.parse(res.choices[0].message.content);
+  
+    // 🖼️ Extract image from article (og:image preferred)
+    const articleHtml = await this.fetchHTML(url);
+    const $ = cheerio.load(articleHtml);
+  
+    const imageUrl =
+      $('meta[property="og:image"]').attr('content') ||
+      $('meta[name="og:image"]').attr('content') ||
+      $('meta[property="twitter:image"]').attr('content') ||
+      $('img')
+        .map((_, el) => $(el).attr('src'))
+        .get()
+        .find(src => src?.startsWith('http')) ||
+      null;
+  
+    const post: Partial<Post> = {
+      title: parsed.title || '[No Title]',
+      sourceUrl: url,
+      sourceName,
+      imageUrl, // ✅ most relevant image for article
+      platforms: {
+        twitter: Array.isArray(parsed.twitter) ? parsed.twitter.join('\n\n') : parsed.twitter || '',
+        instagram: parsed.instagram || '',
+        facebook: parsed.facebook || '',
+        masmedia: parsed.masmedia || '',
+      },
+    };
+  
+    return post;
+  }
+  
 }

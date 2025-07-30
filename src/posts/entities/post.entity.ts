@@ -7,7 +7,10 @@ export type PostDocument = Post & Document;
 export class Post {
   @Prop({ required: true })
   title: string; // 🆕 The title of the news article
-
+  
+  @Prop({ required: false })
+  imageUrl?: string;
+  
   @Prop({ required: true })
   sourceUrl: string;
 
