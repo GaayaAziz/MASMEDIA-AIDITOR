@@ -8,11 +8,22 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { ScrapeLog, ScrapeLogDocument } from './entities/log.entity';
 import { Post } from '../posts/entities/post.entity';
+import { Subject, Observable } from 'rxjs';              // ✨ NEW
+import { MessageEvent } from '@nestjs/common';
 
+export interface PostEvent extends MessageEvent {
+  data: {
+    type: 'post' | 'error';
+    payload: any;
+  };
+}
 @Injectable()
 export class LlmScraperService {
   private readonly openai: OpenAI;
   private readonly logger = new Logger(LlmScraperService.name);
+
+  // ✨ Stream every new post (or scrape error)
+  private readonly postSubject = new Subject<PostEvent>();
 
   constructor(
     private http: HttpService,
@@ -21,57 +32,48 @@ export class LlmScraperService {
   ) {
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
-
+  getPostStream(): Observable<PostEvent> {
+    return this.postSubject.asObservable();
+  }
   
-  async processWebsite(url: string, sourceName: string): Promise<Post[]> {
-    const createdPosts: Post[] = [];
-    
+  async processWebsite(url: string, sourceName: string): Promise<void> {
     try {
-      const html = await this.fetchHTML(url);
-      const links = await this.extractRelevantLinks(html, url);
-  
+      const html   = await this.fetchHTML(url);
+      const links  = await this.extractRelevantLinks(html, url);
+
       for (const link of links) {
         try {
           const articleHtml = await this.fetchHTML(link);
-          const articleContent = this.extractText(articleHtml);
-          const post = await this.generatePosts(articleContent, link, sourceName);
-          const createdPost = await this.postsService.createPost(post);
-          createdPosts.push(createdPost);
+          const articleTxt  = this.extractText(articleHtml);
+          const postDraft   = await this.generatePosts(articleTxt, link, sourceName);
+
+          /* 1️⃣  Stream to clients immediately  */
+          this.postSubject.next({ data: { type: 'post', payload: postDraft } });
+
+          /* 2️⃣  Fire-and-forget DB write — no await  */
+          this.postsService
+              .createPost(postDraft)
+              .catch(err => this.logger.error(`Mongo save error: ${err.message}`));
+
         } catch (err) {
-          this.logger.warn(`Skipping article ${link}: ${err.message}`);
+          this.logger.warn(`Article skipped (${link}): ${err.message}`);
+          this.postSubject.next({ data: { type: 'error', payload: { link, msg: err.message } } });
         }
       }
-  
-      await this.logModel.create({ 
-        url, 
-        sourceName, 
-        status: 'success',
-        postsCreated: createdPosts.length 
-      });
-      
-      return createdPosts;
+
+      await this.logModel.create({ url, sourceName, status: 'success' });
+
     } catch (err) {
       await this.logModel.create({ url, sourceName, status: 'failed', error: err.message });
-      throw err;
+      this.postSubject.next({ data: { type: 'error', payload: { url, msg: err.message } } });
     }
   }
   
 
-  async processBulkWebsites(sites: { url: string; sourceName: string }[]) {
-
-    const results = await Promise.allSettled(
-      sites.map(site => this.processWebsite(site.url, site.sourceName))
+  processBulkWebsites(sites: { url: string; sourceName: string }[]) {
+    void Promise.allSettled(            // fire-and-forget
+      sites.map(s => this.processWebsite(s.url, s.sourceName))
     );
-
-    return sites.map((site, idx) => ({
-      url: site.url,
-      sourceName: site.sourceName,
-      status: results[idx].status === 'fulfilled' ? 'success' : 'failed',
-      error: results[idx].status === 'rejected' ? results[idx].reason?.message : undefined,
-      posts: results[idx].status === 'fulfilled' ? results[idx].value : [],
-      postsCount: results[idx].status === 'fulfilled' ? results[idx].value.length : 0,
-    }));
-
   }
 
 
