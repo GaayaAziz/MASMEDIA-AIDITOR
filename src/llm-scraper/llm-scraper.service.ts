@@ -22,7 +22,10 @@ export class LlmScraperService {
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
 
-  async processWebsite(url: string, sourceName: string): Promise<void> {
+  
+  async processWebsite(url: string, sourceName: string): Promise<Post[]> {
+    const createdPosts: Post[] = [];
+    
     try {
       const html = await this.fetchHTML(url);
       const links = await this.extractRelevantLinks(html, url);
@@ -32,13 +35,21 @@ export class LlmScraperService {
           const articleHtml = await this.fetchHTML(link);
           const articleContent = this.extractText(articleHtml);
           const post = await this.generatePosts(articleContent, link, sourceName);
-          await this.postsService.createPost(post);
+          const createdPost = await this.postsService.createPost(post);
+          createdPosts.push(createdPost);
         } catch (err) {
           this.logger.warn(`Skipping article ${link}: ${err.message}`);
         }
       }
   
-      await this.logModel.create({ url, sourceName, status: 'success' });
+      await this.logModel.create({ 
+        url, 
+        sourceName, 
+        status: 'success',
+        postsCreated: createdPosts.length 
+      });
+      
+      return createdPosts;
     } catch (err) {
       await this.logModel.create({ url, sourceName, status: 'failed', error: err.message });
       throw err;
@@ -47,6 +58,7 @@ export class LlmScraperService {
   
 
   async processBulkWebsites(sites: { url: string; sourceName: string }[]) {
+
     const results = await Promise.allSettled(
       sites.map(site => this.processWebsite(site.url, site.sourceName))
     );
@@ -55,9 +67,14 @@ export class LlmScraperService {
       url: site.url,
       sourceName: site.sourceName,
       status: results[idx].status === 'fulfilled' ? 'success' : 'failed',
-      error: results[idx].status === 'rejected' ? results[idx].reason.message : undefined,
+      error: results[idx].status === 'rejected' ? results[idx].reason?.message : undefined,
+      posts: results[idx].status === 'fulfilled' ? results[idx].value : [],
+      postsCount: results[idx].status === 'fulfilled' ? results[idx].value.length : 0,
     }));
+
   }
+
+
 
   async getRecentLogs(limit = 20) {
     return this.logModel.find().sort({ createdAt: -1 }).limit(limit).lean();

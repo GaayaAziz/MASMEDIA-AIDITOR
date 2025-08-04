@@ -16,6 +16,9 @@ export class ScrapeLog {
 
   @Prop()
   error?: string;
+
+  @Prop({ default: 0 })
+  postsCreated?: number;
 }
 
 export const ScrapeLogSchema = SchemaFactory.createForClass(ScrapeLog);
