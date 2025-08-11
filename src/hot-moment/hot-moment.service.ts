@@ -4,6 +4,8 @@ import { Model } from 'mongoose';
 import OpenAI from 'openai';
 import { ChatCompletionMessageParam } from 'openai/resources';
 import { HotMoment } from './schemas/hot-moment.schema';
+import { Subject } from 'rxjs';
+
 
 type Capture = {
   offset: number;
@@ -14,6 +16,13 @@ type Capture = {
 @Injectable()
 export class HotMomentService {
   private openai: OpenAI;
+  public postStream$ = new Subject<{
+  threadId: string;
+  title: string;
+  posts: any;
+    captures: any[];
+
+}>();
 
   private threadsHistory: Record<
     string,
@@ -154,6 +163,13 @@ Réponds uniquement par "true" ou "false". Aucune autre information.`
           );
 
           const captures = this.pendingCaptures[threadId] || [];
+          // ✅ STREAM posts + captures BEFORE saving to DB
+            this.postStream$.next({
+              threadId,
+              title: lastTitle,
+              posts,
+              captures,
+            });
           await this.saveHotMoment(
             threadId,
             lastTitle,

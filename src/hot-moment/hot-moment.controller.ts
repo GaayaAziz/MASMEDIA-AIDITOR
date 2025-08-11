@@ -1,11 +1,32 @@
-import { Body, Controller, Post , Get , Put , Param} from '@nestjs/common';
+import { Body, Controller, Post , Get , Put , Param , Sse , MessageEvent} from '@nestjs/common';
 import { HotMomentService } from './hot-moment.service';
 import { AnalyzeParagraphDto } from './dto/analyze-paragraph.dto';
 import { FinalizeThreadDto } from './dto/finalize-thread.dto';
+import { HttpService } from '@nestjs/axios';
+import { PublishPostDto } from './dto/publish-post.dto';
+import { Observable, filter, map } from 'rxjs';
+
+
+
+
 
 @Controller('hot-moment')
 export class HotMomentController {
-  constructor(private readonly hotMomentService: HotMomentService) {}
+  constructor(private readonly hotMomentService: HotMomentService,
+    private readonly httpService: HttpService
+  ) {}
+
+
+  @Sse('stream/:threadId')
+streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
+  return this.hotMomentService.postStream$.pipe(
+    filter(data => data.threadId === threadId),
+    map(data => ({
+      data, // contains: threadId, title, posts, captures
+    }))
+  );
+}
+
 
   /** ✅ Crée un thread pour un nouveau live */
   @Post('create-thread')
@@ -54,5 +75,20 @@ export class HotMomentController {
   ) {
     return this.hotMomentService.updatePostsByHotMomentId(id, body.posts);
   }
+
+ @Post('publish')
+async publishToN8n(@Body() body: PublishPostDto) {
+  const formattedPosts = body.posts.map(post => ({
+    platform: post.platform,
+    text: post.text,
+    imageUrl: body.selectedImage, // attach selected image to all platforms
+  }));
+
+  await this.httpService
+    .post('http://localhost:5678/webhook/publish', { posts: formattedPosts })
+    .toPromise();
+
+  return { status: 'ok' };
+}
 
 }
