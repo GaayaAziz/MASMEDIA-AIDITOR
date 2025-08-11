@@ -138,7 +138,7 @@ Réponds STRICTEMENT en JSON comme ceci :
           {
             role: 'system',
             content: `Tu dois décider si deux titres parlent du même sujet tech ou pas.
-Réponds uniquement par "true" ou "false". Aucune autre information.`
+                Réponds uniquement par "true" ou "false". Aucune autre information.`
           },
           {
             role: 'user',
