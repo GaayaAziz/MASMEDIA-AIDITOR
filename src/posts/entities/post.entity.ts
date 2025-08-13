@@ -6,7 +6,7 @@ export type PostDocument = Post & Document;
 @Schema({ timestamps: true })
 export class Post {
   @Prop({ required: true })
-  title: string; // 🆕 The title of the news article
+  title: string;
   
   @Prop({ required: false })
   imageUrl?: string;
@@ -32,6 +32,54 @@ export class Post {
     facebook: string;
     masmedia: string;
   };
+
+  @Prop({
+    type: {
+      facebook: {
+        published: { type: Boolean, default: false },
+        publishedAt: { type: Date },
+        publishedId: { type: String },
+      },
+      twitter: {
+        published: { type: Boolean, default: false },
+        publishedAt: { type: Date },
+        publishedId: { type: String },
+      },
+      instagram: {
+        published: { type: Boolean, default: false },
+        publishedAt: { type: Date },
+        publishedId: { type: String },
+      },
+    },
+    default: {
+      facebook: { published: false },
+      twitter: { published: false },
+      instagram: { published: false },
+    },
+  })
+  publishedTo?: {
+    facebook: {
+      published: boolean;
+      publishedAt?: Date;
+      publishedId?: string;
+    };
+    twitter: {
+      published: boolean;
+      publishedAt?: Date;
+      publishedId?: string;
+    };
+    instagram: {
+      published: boolean;
+      publishedAt?: Date;
+      publishedId?: string;
+    };
+  };
+
+  @Prop({ default: false })
+  archived?: boolean;
+
+  @Prop()
+  tags?: string[];
 }
 
 export const PostSchema = SchemaFactory.createForClass(Post);

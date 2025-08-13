@@ -6,6 +6,11 @@ import { TranscriptionModule } from './transcription/transcription.module';
 import { LlmScraperModule } from './llm-scraper/llm-scraper.module';
 import { PostsModule } from './posts/posts.module';
 import { LoggerMiddleware } from './middleware/logger.middleware';
+import { FacebookAuthController } from './facebook-publishing/facebook-auth.controller';
+import { FacebookPublishingService } from './facebook-publishing/facebook-publishing.service';
+import { FacebookPublishingController } from './facebook-publishing/facebook-publishing.controller';
+import { FacebookModule } from './facebook-publishing/facebook.module';
+import { HttpModule } from '@nestjs/axios'; // Add this import
 dotenv.config();
 
 @Module({
@@ -15,11 +20,14 @@ dotenv.config();
     TranscriptionModule,
     PostsModule,
     LlmScraperModule,
+    FacebookModule,
+    HttpModule,  // Add HttpModule here
   ],
-  providers: [],
+  providers: [FacebookPublishingService],
+  controllers: [FacebookAuthController, FacebookPublishingController],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(LoggerMiddleware).forRoutes('*'); // Applique le middleware à toutes les routes
-    }
+    consumer.apply(LoggerMiddleware).forRoutes('*'); // Apply the middleware to all routes
   }
+}
