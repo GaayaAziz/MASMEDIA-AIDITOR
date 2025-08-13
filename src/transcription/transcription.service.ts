@@ -109,7 +109,7 @@ export class TranscriptionService {
     console.log('🎬 Starting live stream recording...');
 
     const threadId = await this.hotMomentService.createThread();
-
+console.log(`🧠 threadID: ${threadId}...`);
     // Store pending captures here:
     const pendingCaptures: Record<string, { offset: number; screenshotPath: string; gifPath: string }[]> = {};
 
