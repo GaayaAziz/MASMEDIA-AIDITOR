@@ -23,14 +23,20 @@ async function bootstrap() {
     .setVersion('1.0')
     .addTag('llm-scraper') 
     .build();
-  const document = SwaggerModule.createDocument(app, config);
+const document = SwaggerModule.createDocument(app, config);
+  
+  // Configuration Swagger UI
   SwaggerModule.setup('api/docs', app, document);
 
-  await app.listen(3006);
-  console.log('🚀 Server running on http://localhost:3006');
-  console.log('📄 Swagger documentation available at http://localhost:3006/api/docs');
+  // Exposer la spécification OpenAPI en JSON à l'URL /api-json
+    app.getHttpAdapter().getInstance().use('/api-json', (req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify(document));
+    });
+
+  await app.listen(3001);
+  console.log('🚀 Server running on http://localhost:3001');
+  console.log('📄 Swagger documentation available at http://localhost:3001/api/docs');
+  console.log('📡 OpenAPI specification available at http://localhost:3001/api-json');
 }
 bootstrap();
-
-
-

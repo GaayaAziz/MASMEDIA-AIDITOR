@@ -1,7 +1,8 @@
 // src/audio/audio.controller.ts
 import { Controller, Get, Query } from '@nestjs/common';
 import { AudioCleanerService } from './audio-cleaning.service';
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('audio')
 @Controller('audio')
 export class AudioController {
   constructor(private readonly audioService: AudioCleanerService) {}

@@ -1,7 +1,8 @@
 // src/transcription/transcription.controller.ts
 import { Controller, Get, Query } from '@nestjs/common';
 import { TranscriptionService } from './transcription.service';
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('transcription')
 @Controller('transcription')
 export class TranscriptionController {
   constructor(private readonly transcriptionService: TranscriptionService) {}

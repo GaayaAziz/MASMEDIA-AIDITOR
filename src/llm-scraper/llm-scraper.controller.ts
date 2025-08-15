@@ -3,7 +3,8 @@
   import { LlmScraperService } from './llm-scraper.service';
   import { Observable } from 'rxjs';
   import { MessageEvent } from '@nestjs/common';
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('llm-scraper')
   @Controller('llm-scraper')
   export class LlmScraperController {
     constructor(private readonly llmScraperService: LlmScraperService) {}

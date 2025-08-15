@@ -3,7 +3,8 @@ import { Response } from 'express';
 import axios from 'axios';
 import { FacebookCredentialsService } from './facebook-credentials.service';
 import { FacebookPublishingService } from './facebook-publishing.service';
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('auth/facebook')
 @Controller('auth/facebook')
 export class FacebookAuthController {
   constructor(

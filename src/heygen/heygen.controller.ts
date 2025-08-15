@@ -16,7 +16,8 @@ import type { Express } from 'express';
 import { HeygenService } from './heygen.service';
 import type { Response } from 'express';
 
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('heygen')
 @Controller('heygen')
 export class HeygenController {
   constructor(private readonly svc: HeygenService) {}

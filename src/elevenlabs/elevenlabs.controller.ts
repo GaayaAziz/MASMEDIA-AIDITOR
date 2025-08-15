@@ -19,7 +19,8 @@ import { CreateVoiceDto } from './dto/create-voice.dto';
 import { memoryStorage } from 'multer';
 import type { Express } from 'express';
 import * as path from 'path';
-
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
+@ApiTags('elevenlabs')
 @Controller('elevenlabs')
 export class ElevenLabsController {
   constructor(private readonly service: ElevenLabsService) {}
