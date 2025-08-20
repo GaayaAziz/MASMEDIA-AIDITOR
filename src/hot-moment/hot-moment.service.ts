@@ -345,6 +345,6 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
     ).exec();
   }
   async getAllHotMoments() {
-    return this.hotMomentModel.find().sort({ createdAt: -1 }).exec();
+    return this.hotMomentModel.find().sort({ createdAt: -1 }).lean();
   }
 }

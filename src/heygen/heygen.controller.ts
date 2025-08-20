@@ -58,15 +58,18 @@ export class HeygenController {
     return this.svc.generateFromTalkingPhoto(body);
   }
 
+  
   // 4) Poll status
+
+
   @Get('status')
   async status(@Query('videoId') videoId: string) {
-    if (!videoId) throw new BadRequestException('videoId is required');
-    return this.svc.getVideoStatus(videoId);
+    if (!videoId) throw new BadRequestException('videoId is required') ;
+    return this.svc.getVideoStatus(videoId) ;
   }
 
   @Get('download')
-async download(@Query('videoId') videoId: string, @Res() res: Response) {
+  async download(@Query('videoId') videoId: string, @Res() res: Response) {
   if (!videoId) return res.status(400).json({ ok: false, error: 'videoId is required' });
 
   const status = await this.svc.getVideoStatus(videoId);
@@ -78,5 +81,7 @@ async download(@Query('videoId') videoId: string, @Res() res: Response) {
   }
 
   await this.svc.streamVideoToResponse(url, res);
-}
+  }
+
+
 }

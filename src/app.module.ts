@@ -1,6 +1,7 @@
 import { Module , MiddlewareConsumer, NestModule} from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { HotMomentModule } from './hot-moment/hot-moment.module';
+import { AuthModule } from './auth/auth.module';
 import * as dotenv from 'dotenv';
 import { TranscriptionModule } from './transcription/transcription.module';
 import { AudioModule } from './audio/audio.module';
@@ -23,7 +24,8 @@ dotenv.config();
     MongooseModule.forRoot(process.env.MONGODB_URI),
     HotMomentModule,
     TranscriptionModule,
-    AudioModule,
+  AudioModule,
+  AuthModule,
     ElevenLabsModule,
     TwitterModule,
     HeygenModule,
@@ -31,6 +33,7 @@ dotenv.config();
     LlmScraperModule,
     FacebookModule,
     HttpModule,  // Add HttpModule here
+
   ],
   providers: [FacebookPublishingService],
   controllers: [FacebookAuthController, FacebookPublishingController],

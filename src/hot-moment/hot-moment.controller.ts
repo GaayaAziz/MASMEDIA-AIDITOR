@@ -74,7 +74,7 @@ streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
     return this.hotMomentService.getPostsByHotMomentId(id);
   }
   @Get()
-  getAll() {
+  async getAll() {
     return this.hotMomentService.getAllHotMoments();
   }
 
@@ -101,5 +101,7 @@ async publishToN8n(@Body() body: PublishPostDto) {
 
   return { status: 'ok' };
 }
+
+
 
 }
