@@ -16,7 +16,7 @@ import { FacebookAuthController } from './facebook-publishing/facebook-auth.cont
 import { FacebookPublishingService } from './facebook-publishing/facebook-publishing.service';
 import { FacebookPublishingController } from './facebook-publishing/facebook-publishing.controller';
 import { FacebookModule } from './facebook-publishing/facebook.module';
-import { HttpModule } from '@nestjs/axios'; // Add this import
+import { HttpModule } from '@nestjs/axios'; 
 dotenv.config();
 
 @Module({
@@ -32,7 +32,9 @@ dotenv.config();
     PostsModule,
     LlmScraperModule,
     FacebookModule,
-    HttpModule,  // Add HttpModule here
+    HttpModule, 
+    
+
 
   ],
   providers: [FacebookPublishingService],
@@ -40,6 +42,6 @@ dotenv.config();
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(LoggerMiddleware).forRoutes('*'); // Apply the middleware to all routes
+    consumer.apply(LoggerMiddleware).forRoutes('*'); 
   }
 }

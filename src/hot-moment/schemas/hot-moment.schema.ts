@@ -19,11 +19,13 @@ export class HotMoment extends Document {
     facebook?: string;
     masmedia?: string;
   };
-  @Prop({ type: [{ offset: Number, screenshotPath: String, gifPath: String }] })
+  @Prop({ type: [{ offset: Number, screenshotPath: String, gifPath: String , screenshotUrl: String, gifUrl: String }] })
   captures?: {
     offset: number;
     screenshotPath: string;
     gifPath: string;
+    screenshotUrl?: string;
+    gifUrl?: string;
   }[];
 }
 

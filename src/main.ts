@@ -2,10 +2,19 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import * as dotenv from 'dotenv';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import * as express from 'express';
+import { join } from 'path';
+
 
 async function bootstrap() {
   dotenv.config(); // Charge les variables .env
   const app = await NestFactory.create(AppModule);
+
+
+  app.use('/media', express.static(join(process.cwd(), 'captures'), {
+  index: false,
+  maxAge: '7d',
+}));
 
   app.setGlobalPrefix('api'); // Préfixe global pour les routes
 

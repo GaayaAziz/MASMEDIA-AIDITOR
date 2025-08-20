@@ -8,7 +8,17 @@ import axios from 'axios';
 import { HotMomentService } from 'src/hot-moment/hot-moment.service';
 
 dotenv.config();
+const CAPTURES_ROOT = path.join(process.cwd(), 'captures');
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'http://localhost:3001'; 
 
+function toPublicUrl(absPath: string) {
+  const rel = path
+    .relative(CAPTURES_ROOT, absPath)
+    .split(path.sep)
+    .map(encodeURIComponent)
+    .join('/');
+  return `${PUBLIC_BASE_URL}/media/${rel}`;
+}
 @Injectable()
 export class TranscriptionService {
   private readonly baseUrl = 'https://api.assemblyai.com';
@@ -20,6 +30,7 @@ export class TranscriptionService {
     private readonly hotMomentService: HotMomentService,
   ) {}
 
+  
   async transcribeLocalAudio(filePath: string): Promise<string> {
     const audioData = await fs.readFile(path.resolve(filePath));
     const uploadRes = await axios.post(
@@ -58,7 +69,7 @@ export class TranscriptionService {
     liveUrl: string,
   ) {
     const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const outputDir = path.join(__dirname, '..', '..', 'captures', threadId);
+    const outputDir = path.join(CAPTURES_ROOT, threadId);
     await fs.mkdir(outputDir, { recursive: true });
 
     const offsets = [75, 60, 45];
@@ -94,7 +105,9 @@ export class TranscriptionService {
         });
       });
 
-      captures.push({ offset, screenshotPath, gifPath });
+      const screenshotUrl = toPublicUrl(screenshotPath);
+      const gifUrl = toPublicUrl(gifPath);
+      captures.push({ offset, screenshotPath, gifPath, screenshotUrl, gifUrl });
     }
 
     console.log(`✅ Captures terminées pour thread ${threadId}`, captures);
