@@ -4,6 +4,7 @@ import * as https from 'https';
 
 import { HeygenService } from './heygen.service';
 import { HeygenController } from './heygen.controller';
+import { ElevenLabsModule } from 'src/elevenlabs/elevenlabs.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { HeygenController } from './heygen.controller';
       httpsAgent: new https.Agent({ keepAlive: true }),
       // baseURL not required since we call absolute URLs in the service
     }),
+    ElevenLabsModule,
   ],
   controllers: [HeygenController],
   providers: [HeygenService],

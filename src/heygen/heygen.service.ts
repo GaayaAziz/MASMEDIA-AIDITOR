@@ -34,30 +34,58 @@ export class HeygenService {
   }
 
   /** 2) Upload your MP3/WAV → asset_id (if you don't want to host it) */
-  async uploadAudioAsset(file: Express.Multer.File) {
-    if (!file?.buffer?.length) throw new InternalServerErrorException('Empty audio');
-    try {
-      const { data } = await firstValueFrom(
-        this.http.post('https://upload.heygen.com/v1/asset', file.buffer, {
-          headers: {
-            'X-Api-Key': this.apiKey,
-            'Content-Type': file.mimetype || 'audio/mpeg',
-          },
-          timeout: 120000,
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-        }),
-      );
-      // response shape: { data: { asset_id: '...' }, error: null }
-      return data;
-    } catch (e: any) {
+async uploadAudioAsset(
+  file:
+    | Express.Multer.File
+    | { buffer: Buffer; mimetype?: string; originalname?: string },
+) {
+  const buffer = file.buffer;
+  const mimetype =
+    ('mimetype' in file && file.mimetype) ? file.mimetype : 'audio/mpeg';
+  if (!buffer?.length) throw new InternalServerErrorException('Empty audio');
+  try {
+    const { data } = await firstValueFrom(
+      this.http.post('https://upload.heygen.com/v1/asset', buffer, {
+        headers: {
+          'X-Api-Key': this.apiKey,
+          'Content-Type': mimetype,            // raw binary upload
+          // 'Content-Disposition' not required
+        },
+        timeout: 120000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      }),
+    );
+
+    // Normalize possible shapes:
+    // { data: { asset_id } }
+    // { data: { id } }
+    // { asset_id } or { id }
+    const asset_id =
+      data?.data?.asset_id ??
+      data?.data?.id ??
+      data?.asset_id ??
+      data?.id ??
+      null;
+
+    if (!asset_id) {
+      // bubble up the raw payload so we can see what's happening
       throw new InternalServerErrorException(
-        `HeyGen upload asset failed: ${
-          e?.response?.data ? JSON.stringify(e.response.data) : e?.message
-        }`,
+        `HeyGen upload asset returned unexpected shape: ${JSON.stringify(data)}`
       );
     }
+
+    return { asset_id, raw: data };
+  } catch (e: any) {
+    throw new InternalServerErrorException(
+      `HeyGen upload asset failed: ${
+        e?.response?.data ? JSON.stringify(e.response.data) : e?.message
+      }`,
+    );
   }
+}
+
+
 
   /** 3) Generate a video from talking_photo + your audio (asset or URL) */
   async generateFromTalkingPhoto(opts: {
@@ -141,5 +169,38 @@ export class HeygenService {
     data.on('error', reject);
   });
 }
+
+/** Upload a raw audio buffer (mp3/wav) -> asset_id (for programmatic TTS result) */
+  async uploadAudioBuffer(
+    buffer: Buffer,
+    filename = 'speech.mp3',
+    mimetype: string = 'audio/mpeg',
+  ) {
+    if (!buffer?.length) {
+      throw new InternalServerErrorException('Empty audio buffer');
+    }
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post('https://upload.heygen.com/v1/asset', buffer, {
+          headers: {
+            'X-Api-Key': this.apiKey,
+            'Content-Type': mimetype,
+            'Content-Disposition': `attachment; filename="${filename}"`,
+          },
+          timeout: 120000,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        }),
+      );
+      // { data: { asset_id }, error: null }
+      return data;
+    } catch (e: any) {
+      throw new InternalServerErrorException(
+        `HeyGen upload buffer failed: ${
+          e?.response?.data ? JSON.stringify(e.response.data) : e?.message
+        }`,
+      );
+    }
+  }
 
 }
