@@ -2,8 +2,7 @@ import { Controller, Post, Body, Get, Param, HttpException, HttpStatus, Query } 
 import { FacebookPublishingService } from './facebook-publishing.service';
 import { FacebookCredentialsService } from './facebook-credentials.service';
 import { PostsService } from '../posts/posts.service';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
-@ApiTags('facebook')
+
 @Controller('facebook')
 export class FacebookPublishingController {
   constructor(
