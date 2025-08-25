@@ -14,10 +14,11 @@ export class FacebookPublishingController {
   @Post('publish/:postId')
   async publishPost(
     @Param('postId') postId: string,
-    @Body() body: { 
+    @Body() body: {
       userId?: string;
       pageId?: string;
       pageAccessToken?: string;
+      force?: boolean; // ✅ allow override
     }
   ) {
     try {
@@ -26,44 +27,40 @@ export class FacebookPublishingController {
         throw new HttpException('Post not found', HttpStatus.NOT_FOUND);
       }
 
-      if (post.publishedTo?.facebook?.published) {
-        throw new HttpException('Post already published to Facebook', HttpStatus.CONFLICT);
-      }
-
-      let credentials;
+      // Acquire credentials first (we may need them to verify remote state)
+      let credentials: { pageId: string; pageAccessToken: string };
       if (body.pageId && body.pageAccessToken) {
-        credentials = {
-          pageId: body.pageId,
-          pageAccessToken: body.pageAccessToken,
-        };
+        credentials = { pageId: body.pageId, pageAccessToken: body.pageAccessToken };
       } else {
-        const storedCredentials = await this.credentialsService.getCredentials(
-          body.userId || 'default'
-        );
-        
+        const storedCredentials = await this.credentialsService.getCredentials(body.userId || 'default');
         if (!storedCredentials) {
-          throw new HttpException(
-            'Facebook credentials not found. Please authenticate first.',
-            HttpStatus.UNAUTHORIZED
-          );
+          throw new HttpException('Facebook credentials not found. Please authenticate first.', HttpStatus.UNAUTHORIZED);
         }
-        
-        credentials = {
-          pageId: storedCredentials.pageId,
-          pageAccessToken: storedCredentials.pageAccessToken,
-        };
+        credentials = { pageId: storedCredentials.pageId, pageAccessToken: storedCredentials.pageAccessToken };
       }
 
       const isValid = await this.facebookService.validateCredentials(
         credentials.pageId,
         credentials.pageAccessToken
       );
-
       if (!isValid) {
-        throw new HttpException(
-          'Invalid Facebook credentials',
-          HttpStatus.UNAUTHORIZED
+        throw new HttpException('Invalid Facebook credentials', HttpStatus.UNAUTHORIZED);
+      }
+
+      // If our DB says "already published", confirm it still exists on Facebook
+      const prior = post.publishedTo?.facebook;
+      if (prior?.published && prior?.publishedId && !body?.force) {
+        const stillExists = await this.facebookService.objectExists(
+          prior.publishedId,
+          credentials.pageAccessToken
         );
+
+        if (stillExists) {
+          throw new HttpException('Post already published to Facebook', HttpStatus.CONFLICT);
+        } else {
+          // It was deleted / not accessible -> clear local state and proceed
+          await this.postsService.clearPublished(postId, 'facebook');
+        }
       }
 
       const result = await this.facebookService.publishToFacebook({
@@ -75,36 +72,35 @@ export class FacebookPublishingController {
         pageAccessToken: credentials.pageAccessToken,
       });
 
-      if (!result.success) {
-        throw new HttpException(
-          `Failed to publish to Facebook: ${result.error}`,
-          HttpStatus.INTERNAL_SERVER_ERROR
-        );
+      if (!result.success || !result.postId) {
+        throw new HttpException(`Failed to publish to Facebook: ${result.error}`, HttpStatus.INTERNAL_SERVER_ERROR);
       }
 
+      // Save publish state
       await this.postsService.markAsPublished(postId, 'facebook', result.postId);
+
+      // Try to fetch a nicer permalink
+      const permalink = await this.facebookService.getPermalink(result.postId, credentials.pageAccessToken);
 
       return {
         success: true,
         message: 'Post published successfully to Facebook',
         facebookPostId: result.postId,
-        facebookUrl: `https://www.facebook.com/${result.postId}`,
+        facebookUrl: permalink ?? `https://www.facebook.com/${result.postId}`,
         originalPost: {
           id: post._id,
           title: post.title,
-          sourceName: post.sourceName
-        }
+          sourceName: post.sourceName,
+        },
+        note:
+          prior?.published && !body?.force
+            ? 'The previous Facebook object no longer existed; state was reset and the post was re-published.'
+            : undefined,
       };
 
     } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      
-      throw new HttpException(
-        `Error publishing to Facebook: ${error.message}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(`Error publishing to Facebook: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -122,40 +118,23 @@ export class FacebookPublishingController {
         throw new HttpException('Message is required', HttpStatus.BAD_REQUEST);
       }
 
-      let credentials;
+      let credentials: { pageId: string; pageAccessToken: string };
       if (body.pageId && body.pageAccessToken) {
-        credentials = {
-          pageId: body.pageId,
-          pageAccessToken: body.pageAccessToken,
-        };
+        credentials = { pageId: body.pageId, pageAccessToken: body.pageAccessToken };
       } else {
-        const storedCredentials = await this.credentialsService.getCredentials(
-          body.userId || 'default'
-        );
-        
+        const storedCredentials = await this.credentialsService.getCredentials(body.userId || 'default');
         if (!storedCredentials) {
-          throw new HttpException(
-            'Facebook credentials not found. Please authenticate first.',
-            HttpStatus.UNAUTHORIZED
-          );
+          throw new HttpException('Facebook credentials not found. Please authenticate first.', HttpStatus.UNAUTHORIZED);
         }
-        
-        credentials = {
-          pageId: storedCredentials.pageId,
-          pageAccessToken: storedCredentials.pageAccessToken,
-        };
+        credentials = { pageId: storedCredentials.pageId, pageAccessToken: storedCredentials.pageAccessToken };
       }
 
       const isValid = await this.facebookService.validateCredentials(
         credentials.pageId,
         credentials.pageAccessToken
       );
-
       if (!isValid) {
-        throw new HttpException(
-          'Invalid Facebook credentials',
-          HttpStatus.UNAUTHORIZED
-        );
+        throw new HttpException('Invalid Facebook credentials', HttpStatus.UNAUTHORIZED);
       }
 
       const result = await this.facebookService.publishToFacebook({
@@ -167,29 +146,22 @@ export class FacebookPublishingController {
         pageAccessToken: credentials.pageAccessToken,
       });
 
-      if (!result.success) {
-        throw new HttpException(
-          `Failed to publish: ${result.error}`,
-          HttpStatus.INTERNAL_SERVER_ERROR
-        );
+      if (!result.success || !result.postId) {
+        throw new HttpException(`Failed to publish: ${result.error}`, HttpStatus.INTERNAL_SERVER_ERROR);
       }
+
+      const permalink = await this.facebookService.getPermalink(result.postId, credentials.pageAccessToken);
 
       return {
         success: true,
         message: 'Test post published successfully',
         facebookPostId: result.postId,
-        facebookUrl: `https://www.facebook.com/${result.postId}`,
+        facebookUrl: permalink ?? `https://www.facebook.com/${result.postId}`,
       };
 
     } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      
-      throw new HttpException(
-        error.message,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(error.message, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -197,24 +169,14 @@ export class FacebookPublishingController {
   async getPageInfo(@Query('pageId') pageId: string, @Query('pageAccessToken') pageAccessToken: string) {
     try {
       if (!pageId || !pageAccessToken) {
-        throw new HttpException(
-          'pageId and pageAccessToken query parameters are required',
-          HttpStatus.BAD_REQUEST
-        );
+        throw new HttpException('pageId and pageAccessToken query parameters are required', HttpStatus.BAD_REQUEST);
       }
 
       const pageInfo = await this.facebookService.getPageInfo(pageId, pageAccessToken);
-      
-      return {
-        success: true,
-        pageInfo
-      };
+      return { success: true, pageInfo };
 
     } catch (error) {
-      throw new HttpException(
-        `Failed to get page info: ${error.message}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      throw new HttpException(`Failed to get page info: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -222,17 +184,10 @@ export class FacebookPublishingController {
   async validateCredentials(@Body() body: { pageId: string; pageAccessToken: string }) {
     try {
       if (!body.pageId || !body.pageAccessToken) {
-        throw new HttpException(
-          'pageId and pageAccessToken are required',
-          HttpStatus.BAD_REQUEST
-        );
+        throw new HttpException('pageId and pageAccessToken are required', HttpStatus.BAD_REQUEST);
       }
 
-      const isValid = await this.facebookService.validateCredentials(
-        body.pageId,
-        body.pageAccessToken
-      );
-
+      const isValid = await this.facebookService.validateCredentials(body.pageId, body.pageAccessToken);
       return {
         success: true,
         valid: isValid,
@@ -240,10 +195,7 @@ export class FacebookPublishingController {
       };
 
     } catch (error) {
-      throw new HttpException(
-        `Error validating credentials: ${error.message}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      throw new HttpException(`Error validating credentials: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -252,7 +204,7 @@ export class FacebookPublishingController {
     try {
       const allPosts = await this.postsService.getAllPosts(1000);
       const publishedPosts = allPosts.filter(post => post.publishedTo?.facebook?.published);
-      
+
       return {
         success: true,
         count: publishedPosts.length,
@@ -262,15 +214,13 @@ export class FacebookPublishingController {
           sourceName: post.sourceName,
           publishedAt: post.publishedTo.facebook.publishedAt,
           facebookPostId: post.publishedTo.facebook.publishedId,
-          facebookUrl: post.publishedTo.facebook.publishedId 
-            ? `https://www.facebook.com/${post.publishedTo.facebook.publishedId}` 
+          facebookUrl: post.publishedTo.facebook.publishedId
+            ? `https://www.facebook.com/${post.publishedTo.facebook.publishedId}`
             : null
         }))
       };
     } catch (error) {
-      throw new HttpException(
-        `Error fetching published posts: ${error.message}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      throw new HttpException(`Error fetching published posts: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
-  }}
+  }
+}

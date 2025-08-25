@@ -20,16 +20,13 @@ export class FacebookPublishingService {
       const { message, imageUrl, link, pageId, pageAccessToken } = postData;
 
       const postPayload: any = {
-        message: message,
+        message,
         access_token: pageAccessToken,
       };
 
-      if (link) {
-        postPayload.link = link;
-      }
+      if (link) postPayload.link = link;
 
       let postId: string;
-
       if (imageUrl) {
         postId = await this.publishWithImage(pageId, postPayload, imageUrl);
       } else {
@@ -39,132 +36,85 @@ export class FacebookPublishingService {
       this.logger.log(`Successfully published post to Facebook. Post ID: ${postId}`);
       return { success: true, postId };
 
-    } catch (error) {
-      this.logger.error(`Failed to publish to Facebook: ${error.message}`);
+    } catch (error: any) {
+      const details = error?.response?.data || error?.message;
+      this.logger.error(`Failed to publish to Facebook: ${JSON.stringify(details)}`);
       return { success: false, error: error.message };
     }
   }
 
   private async publishTextPost(pageId: string, postPayload: any): Promise<string> {
     const response = await firstValueFrom(
-      this.httpService.post(
-        `https://graph.facebook.com/v20.0/${pageId}/feed`,
-        postPayload
-      )
+      this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, postPayload)
     );
 
-    if (!response.data.id) {
-      throw new Error('Failed to get post ID from Facebook response');
-    }
-
+    if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
     return response.data.id;
   }
 
   private async publishWithImage(pageId: string, postPayload: any, imageUrl: string): Promise<string> {
-    try {
-      // Clean the image URL - remove query parameters that might cause issues
-      const cleanImageUrl = imageUrl.split('?')[0];
-      this.logger.log(`Attempting to upload image: ${cleanImageUrl}`);
-  
-      // First, try to upload the photo with caption
-      const photoPayload = {
-        url: cleanImageUrl,
+    // Helper to actually call the Photos API
+    const tryPhoto = async (url: string) => {
+      const payload = {
+        url,
         caption: postPayload.message,
         access_token: postPayload.access_token,
       };
-  
-      const photoResponse = await firstValueFrom(
-        this.httpService.post(
-          `https://graph.facebook.com/v20.0/${pageId}/photos`,
-          photoPayload
-        )
+      const resp = await firstValueFrom(
+        this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/photos`, payload)
       );
+      if (!resp.data?.id) throw new Error('Failed to get photo ID from Facebook response');
+      return resp.data.id as string;
+    };
   
-      if (!photoResponse.data.id) {
-        throw new Error('Failed to get photo ID from Facebook response');
-      }
+    try {
+      // ✅ IMPORTANT: use the *original* URL first (do NOT strip query params)
+      this.logger.log(`Uploading photo to Facebook (original URL): ${imageUrl}`);
+      return await tryPhoto(imageUrl);
+    } catch (err: any) {
+      const details = err?.response?.data || err?.message;
+      this.logger.warn(`Original URL upload failed. Details: ${JSON.stringify(details)}`);
   
-      this.logger.log(`Successfully uploaded photo. Photo ID: ${photoResponse.data.id}`);
-      return photoResponse.data.id;
-  
-    } catch (error) {
-      // Log the full error response from Facebook
-      const errorDetails = error.response?.data || error.message;
-      this.logger.error(`Failed to publish photo directly. Error details: ${JSON.stringify(errorDetails)}`);
-      
-      // Fallback 1: Try without cleaning the URL
+      // Retry with a padded, Facebook-safe transform (keeps full image, no crop)
+      const safeUrl = this.buildFbSafeUrl(imageUrl, 'landscape');
+      this.logger.log(`Retry with transformed URL: ${safeUrl}`);
       try {
-        this.logger.log(`Fallback 1: Trying with original URL: ${imageUrl}`);
-        const photoPayload = {
-          url: imageUrl,
-          caption: postPayload.message,
-          access_token: postPayload.access_token,
-        };
+        return await tryPhoto(safeUrl);
+      } catch (tErr: any) {
+        this.logger.warn(`Transformed upload failed. Details: ${JSON.stringify(tErr?.response?.data || tErr?.message)}`);
   
-        const photoResponse = await firstValueFrom(
-          this.httpService.post(
-            `https://graph.facebook.com/v20.0/${pageId}/photos`,
-            photoPayload
-          )
-        );
-  
-        return photoResponse.data.id;
-      } catch (fallback1Error) {
-        this.logger.error(`Fallback 1 failed: ${JSON.stringify(fallback1Error.response?.data || fallback1Error.message)}`);
-        
-        // Fallback 2: Try as a link post with image preview
+        // Fallback 2: post as a link (lets FB fetch preview)
         try {
-          this.logger.log(`Fallback 2: Trying as link post`);
           const linkPostPayload = {
             message: postPayload.message,
             link: imageUrl,
             access_token: postPayload.access_token,
           };
-  
           const response = await firstValueFrom(
-            this.httpService.post(
-              `https://graph.facebook.com/v20.0/${pageId}/feed`,
-              linkPostPayload
-            )
+            this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, linkPostPayload)
           );
+          if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
+          return response.data.id as string;
+        } catch (fallback2Err: any) {
+          this.logger.warn(`Link post failed. Details: ${JSON.stringify(fallback2Err?.response?.data || fallback2Err?.message)}`);
   
-          if (!response.data.id) {
-            throw new Error('Failed to get post ID from Facebook response');
-          }
-  
-          return response.data.id;
-        } catch (fallback2Error) {
-          this.logger.error(`Fallback 2 failed: ${JSON.stringify(fallback2Error.response?.data || fallback2Error.message)}`);
-          
-          // Fallback 3: Post as text only and mention the image issue
-          try {
-            this.logger.log(`Fallback 3: Posting as text only`);
-            const textOnlyPayload = {
-              message: `${postPayload.message}\n\n[Image could not be loaded: ${imageUrl}]`,
-              access_token: postPayload.access_token,
-            };
-  
-            const response = await firstValueFrom(
-              this.httpService.post(
-                `https://graph.facebook.com/v20.0/${pageId}/feed`,
-                textOnlyPayload
-              )
-            );
-  
-            if (!response.data.id) {
-              throw new Error('Failed to get post ID from Facebook response');
-            }
-  
-            this.logger.warn(`Posted as text only due to image upload issues. Post ID: ${response.data.id}`);
-            return response.data.id;
-          } catch (fallback3Error) {
-            const finalError = fallback3Error.response?.data || fallback3Error.message;
-            throw new Error(`All fallback methods failed. Final error: ${JSON.stringify(finalError)}`);
-          }
+          // Fallback 3: text only
+          const textOnlyPayload = {
+            message: `${postPayload.message}\n\n[Image could not be loaded: ${imageUrl}]`,
+            access_token: postPayload.access_token,
+          };
+          const response = await firstValueFrom(
+            this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, textOnlyPayload)
+          );
+          if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
+          this.logger.warn(`Posted as text only due to image upload issues. Post ID: ${response.data.id}`);
+          return response.data.id as string;
         }
       }
     }
   }
+  
+
   async validateCredentials(pageId: string, pageAccessToken: string): Promise<boolean> {
     try {
       const response = await firstValueFrom(
@@ -172,7 +122,6 @@ export class FacebookPublishingService {
           `https://graph.facebook.com/v20.0/${pageId}?fields=id,name&access_token=${pageAccessToken}`
         )
       );
-      
       return response.data.id === pageId;
     } catch (error) {
       this.logger.error(`Invalid Facebook credentials: ${error.message}`);
@@ -187,11 +136,92 @@ export class FacebookPublishingService {
           `https://graph.facebook.com/v20.0/${pageId}?fields=id,name,username,category,fan_count&access_token=${pageAccessToken}`
         )
       );
-      
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get page info: ${error.message}`);
       throw error;
     }
   }
+
+  /** ✅ NEW: check if a post/photo ID still exists on Facebook */
+  async objectExists(objectId: string, accessToken: string): Promise<boolean> {
+    try {
+      const resp = await firstValueFrom(
+        this.httpService.get(
+          `https://graph.facebook.com/v20.0/${objectId}?fields=id&access_token=${accessToken}`
+        )
+      );
+      return !!resp.data?.id;
+    } catch (e: any) {
+      const err = e?.response?.data?.error;
+      const msg = (err?.message || '').toLowerCase();
+
+      const notFound =
+        e?.response?.status === 404 ||
+        err?.code === 100 ||   // (#100) Object does not exist
+        err?.code === 803 ||   // Unknown object
+        msg.includes('object does not exist') ||
+        msg.includes('cannot be found') ||
+        msg.includes('unknown path');
+
+      if (notFound) return false;
+
+      if (err?.code === 190) {
+        // Invalid token — let caller handle as credentials problem
+        throw new Error('Invalid or expired access token when checking Facebook object.');
+      }
+
+      // Be permissive: assume it doesn't exist so user can re-post.
+      this.logger.warn(`objectExists inconclusive: ${JSON.stringify(err || e.message)}`);
+      return false;
+    }
+  }
+
+  /** ✅ NEW: get a nice permalink for the created object (post/photo) */
+  async getPermalink(objectId: string, accessToken: string): Promise<string | null> {
+    try {
+      const resp = await firstValueFrom(
+        this.httpService.get(
+          `https://graph.facebook.com/v20.0/${objectId}?fields=permalink_url&access_token=${accessToken}`
+        )
+      );
+      return resp.data?.permalink_url || null;
+    } catch (e: any) {
+      this.logger.warn(
+        `Failed to fetch Facebook permalink for ${objectId}: ${e?.response?.data?.error?.message || e.message}`
+      );
+      return null;
+    }
+  }
+
+  private buildFbSafeUrl(
+    originalUrl: string,
+    mode: 'square' | 'portrait' | 'landscape' = 'landscape'
+  ): string {
+    // Prefer Cloudinary if CLOUDINARY_CLOUD_NAME is set
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  
+    // Recommended FB feed sizes (pad to keep whole image)
+    // landscape = 1200x630 (≈1.91:1), portrait = 1080x1350 (4:5), square = 1080x1080 (1:1)
+    if (cloudName) {
+      const tx =
+        mode === 'portrait'
+          ? 'c_pad,g_auto,b_auto:predominant,ar_4:5,w_1080,h_1350,f_jpg,q_auto:good,e_improve'
+          : mode === 'square'
+            ? 'c_pad,g_auto,b_auto:predominant,ar_1:1,w_1080,h_1080,f_jpg,q_auto:good,e_improve'
+            : 'c_pad,g_auto,b_auto:predominant,ar_1.91,w_1200,h_630,f_jpg,q_auto:good,e_improve';
+      return `https://res.cloudinary.com/${cloudName}/image/fetch/${tx}/${encodeURIComponent(originalUrl)}`;
+    }
+  
+    // Fallback transformer
+    const noProto = originalUrl.replace(/^https?:\/\//i, '');
+    const dims =
+      mode === 'portrait' ? 'w=1080&h=1350'
+      : mode === 'square' ? 'w=1080&h=1080'
+      : 'w=1200&h=630';
+    // fit=contain pads (no crop), bg white; dpr=2 for sharper preview
+    return `https://images.weserv.nl/?url=${encodeURIComponent(noProto)}&${dims}&fit=contain&bg=ffffff&output=jpg&dpr=2`;
+  }
+  
+  
 }

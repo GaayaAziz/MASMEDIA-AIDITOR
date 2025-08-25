@@ -39,7 +39,11 @@ export class PostsService {
     };
   }
 
-  async markAsPublished(postId: string, platform: 'facebook' | 'twitter' | 'instagram', publishedId?: string) {
+  async markAsPublished(
+    postId: string,
+    platform: 'facebook' | 'twitter' | 'instagram',
+    publishedId?: string
+  ) {
     const updateData: any = {};
     updateData[`publishedTo.${platform}`] = {
       published: true,
@@ -52,6 +56,24 @@ export class PostsService {
       { $set: updateData },
       { new: true }
     ).lean();
+  }
+
+  // ✅ NEW: clear publish state for a platform (used when IG post was deleted remotely)
+  async clearPublished(
+    postId: string,
+    platform: 'facebook' | 'twitter' | 'instagram'
+  ): Promise<void> {
+    const platformPath = `publishedTo.${platform}`;
+    await this.postModel.updateOne(
+      { _id: postId },
+      {
+        $set: {
+          [`${platformPath}.published`]: false,
+          [`${platformPath}.publishedAt`]: null,
+          [`${platformPath}.publishedId`]: null,
+        },
+      }
+    );
   }
 
   async getRecentPosts(hours = 24, limit = 50) {
