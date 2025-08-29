@@ -53,7 +53,6 @@ export class FacebookPublishingService {
   }
 
   private async publishWithImage(pageId: string, postPayload: any, imageUrl: string): Promise<string> {
-    // Helper to actually call the Photos API
     const tryPhoto = async (url: string) => {
       const payload = {
         url,
@@ -67,15 +66,49 @@ export class FacebookPublishingService {
       return resp.data.id as string;
     };
   
+    const tryPhotoUpload = async (buffer: Buffer, filename: string) => {
+      const FormData = (await import('form-data')).default;
+      const form = new FormData();
+      form.append('source', buffer, { filename });
+      form.append('caption', postPayload.message);
+      form.append('access_token', postPayload.access_token);
+  
+      const headers = form.getHeaders();
+      const resp = await firstValueFrom(
+        this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/photos`, form, { headers })
+      );
+      if (!resp.data?.id) throw new Error('Failed to get photo ID from Facebook response');
+      return resp.data.id as string;
+    };
+  
+    // Check if it's a localhost URL
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(imageUrl);
+    
+    if (isLocalhost) {
+      try {
+        this.logger.log(`Uploading local image to Facebook: ${imageUrl}`);
+        // Fetch the image from localhost and upload as binary
+        const imageResponse = await firstValueFrom(
+          this.httpService.get(imageUrl, { responseType: 'arraybuffer' })
+        );
+        const buffer = Buffer.from(imageResponse.data);
+        const filename = imageUrl.split('/').pop() || 'image.jpg';
+        return await tryPhotoUpload(buffer, filename);
+      } catch (err: any) {
+        this.logger.error(`Local image upload failed: ${err.message}`);
+        throw err;
+      }
+    }
+  
     try {
-      // ✅ IMPORTANT: use the *original* URL first (do NOT strip query params)
+      // For public URLs, try the original URL first
       this.logger.log(`Uploading photo to Facebook (original URL): ${imageUrl}`);
       return await tryPhoto(imageUrl);
     } catch (err: any) {
       const details = err?.response?.data || err?.message;
       this.logger.warn(`Original URL upload failed. Details: ${JSON.stringify(details)}`);
   
-      // Retry with a padded, Facebook-safe transform (keeps full image, no crop)
+      // Retry with transformed URL
       const safeUrl = this.buildFbSafeUrl(imageUrl, 'landscape');
       this.logger.log(`Retry with transformed URL: ${safeUrl}`);
       try {
@@ -83,33 +116,17 @@ export class FacebookPublishingService {
       } catch (tErr: any) {
         this.logger.warn(`Transformed upload failed. Details: ${JSON.stringify(tErr?.response?.data || tErr?.message)}`);
   
-        // Fallback 2: post as a link (lets FB fetch preview)
-        try {
-          const linkPostPayload = {
-            message: postPayload.message,
-            link: imageUrl,
-            access_token: postPayload.access_token,
-          };
-          const response = await firstValueFrom(
-            this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, linkPostPayload)
-          );
-          if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
-          return response.data.id as string;
-        } catch (fallback2Err: any) {
-          this.logger.warn(`Link post failed. Details: ${JSON.stringify(fallback2Err?.response?.data || fallback2Err?.message)}`);
-  
-          // Fallback 3: text only
-          const textOnlyPayload = {
-            message: `${postPayload.message}\n\n[Image could not be loaded: ${imageUrl}]`,
-            access_token: postPayload.access_token,
-          };
-          const response = await firstValueFrom(
-            this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, textOnlyPayload)
-          );
-          if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
-          this.logger.warn(`Posted as text only due to image upload issues. Post ID: ${response.data.id}`);
-          return response.data.id as string;
-        }
+        // Fallback: text only
+        const textOnlyPayload = {
+          message: `${postPayload.message}\n\n[Image could not be loaded: ${imageUrl}]`,
+          access_token: postPayload.access_token,
+        };
+        const response = await firstValueFrom(
+          this.httpService.post(`https://graph.facebook.com/v20.0/${pageId}/feed`, textOnlyPayload)
+        );
+        if (!response.data?.id) throw new Error('Failed to get post ID from Facebook response');
+        this.logger.warn(`Posted as text only due to image upload issues. Post ID: ${response.data.id}`);
+        return response.data.id as string;
       }
     }
   }

@@ -19,14 +19,35 @@ export class HotMoment extends Document {
     facebook?: string;
     masmedia?: string;
   };
-  @Prop({ type: [{ offset: Number, screenshotPath: String, gifPath: String , screenshotUrl: String, gifUrl: String }] })
+  @Prop({ type: [{ offset: Number, screenshotPath: String, gifPath: String }] })
   captures?: {
     offset: number;
     screenshotPath: string;
     gifPath: string;
-    screenshotUrl?: string;
-    gifUrl?: string;
   }[];
+  @Prop({
+    type: {
+      facebook: {
+        published: { type: Boolean, default: false },
+        publishedAt: { type: Date },
+        publishedId: { type: String },
+      },
+      instagram: {
+        published: { type: Boolean, default: false },
+        publishedAt: { type: Date },
+        publishedId: { type: String },
+      },
+    },
+    default: {
+      facebook: { published: false },
+      instagram: { published: false },
+    },
+  })
+  publishedTo?: {
+    facebook: { published: boolean; publishedAt?: Date; publishedId?: string };
+    instagram: { published: boolean; publishedAt?: Date; publishedId?: string };
+  };
+
 }
 
 export const HotMomentSchema = SchemaFactory.createForClass(HotMoment);

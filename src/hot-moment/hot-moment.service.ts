@@ -16,7 +16,13 @@ type Capture = {
 @Injectable()
 export class HotMomentService {
   private openai: OpenAI;
-  public postStream$ = new Subject<{ threadId: string; title: string; content: string; posts: any; captures: any[] }>();
+  public postStream$ = new Subject<{
+  threadId: string;
+  title: string;
+  posts: any;
+    captures: any[];
+
+}>();
 
   private threadsHistory: Record<
     string,
@@ -155,8 +161,15 @@ Réponds STRICTEMENT en JSON comme ceci :
             lastTitle,
             this.hotMomentContentByThread[threadId],
           );
+
           const captures = this.pendingCaptures[threadId] || [];
-          // removed early emission; will emit after DB save
+          // ✅ STREAM posts + captures BEFORE saving to DB
+            this.postStream$.next({
+              threadId,
+              title: lastTitle,
+              posts,
+              captures,
+            });
           await this.saveHotMoment(
             threadId,
             lastTitle,
@@ -164,7 +177,8 @@ Réponds STRICTEMENT en JSON comme ceci :
             posts,
             captures,
           );
-          delete this.pendingCaptures[threadId];
+
+          delete this.pendingCaptures[threadId]; // ✅ reset
         }
 
         this.hotMomentContentByThread[threadId] = '';
@@ -297,8 +311,13 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
     threadId: string,
     title: string,
     content: string,
-    posts?: { twitter?: string[]; instagram?: string; facebook?: string; masmedia?: string },
-    captures?: any[],
+    posts?: {
+      twitter?: string[];
+      instagram?: string;
+      facebook?: string;
+      masmedia?: string;
+    },
+    captures?: Capture[],
   ) {
     const hotMoment = new this.hotMomentModel({
       thread_id: threadId,
@@ -309,9 +328,7 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
     });
 
     await hotMoment.save();
-    if (posts) {
-      this.postStream$.next({ threadId, title, content: content.trim(), posts, captures: captures || [] });
-    }
+    console.log(`✅ Hot moment sauvegardé: ${title}`);
   }
 
   async finalizeThread(threadId: string) {
@@ -322,7 +339,7 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
       const posts = await this.generateSocialPosts(lastTitle, content);
       const captures = this.pendingCaptures[threadId] || [];
 
-  await this.saveHotMoment(threadId, lastTitle, content, posts, captures);
+      await this.saveHotMoment(threadId, lastTitle, content, posts, captures);
       delete this.pendingCaptures[threadId];
       this.hotMomentContentByThread[threadId] = '';
     }
@@ -344,7 +361,42 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
       { new: true }
     ).exec();
   }
-  async getAllHotMoments() {
-    return this.hotMomentModel.find().sort({ createdAt: -1 }).lean();
+
+  async getHotMomentById(id: string) {
+    return this.hotMomentModel.findById(id).lean();
   }
+
+  async markAsPublishedHotMoment(
+    hotMomentId: string,
+    platform: 'facebook' | 'instagram',
+    publishedId: string
+  ) {
+    const update: any = {};
+    update[`publishedTo.${platform}`] = {
+      published: true,
+      publishedAt: new Date(),
+      publishedId,
+    };
+    return this.hotMomentModel
+      .findByIdAndUpdate(hotMomentId, { $set: update }, { new: true })
+      .lean();
+  }
+
+  async clearPublishedHotMoment(
+    hotMomentId: string,
+    platform: 'facebook' | 'instagram'
+  ): Promise<void> {
+    const p = `publishedTo.${platform}`;
+    await this.hotMomentModel.updateOne(
+      { _id: hotMomentId },
+      {
+        $set: {
+          [`${p}.published`]: false,
+          [`${p}.publishedAt`]: null,
+          [`${p}.publishedId`]: null,
+        },
+      }
+    );
+  }
+
 }

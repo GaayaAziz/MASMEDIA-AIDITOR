@@ -8,8 +8,7 @@ import { Observable, filter, map } from 'rxjs';
 
 
 
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
-@ApiTags('hot-moment')
+
 
 @Controller('hot-moment')
 export class HotMomentController {
@@ -23,17 +22,11 @@ streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
   return this.hotMomentService.postStream$.pipe(
     filter(data => data.threadId === threadId),
     map(data => ({
-      data, 
+      data, // contains: threadId, title, posts, captures
     }))
   );
 }
 
-  @Sse('stream')
-  streamAll(): Observable<MessageEvent> {
-    return this.hotMomentService.postStream$.pipe(
-      map(data => ({ data }))
-    );
-  }
 
   /** ✅ Crée un thread pour un nouveau live */
   @Post('create-thread')
@@ -73,10 +66,6 @@ streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
   getPosts(@Param('id') id: string) {
     return this.hotMomentService.getPostsByHotMomentId(id);
   }
-  @Get()
-  async getAll() {
-    return this.hotMomentService.getAllHotMoments();
-  }
 
   // 3. Update social posts by hotMomentId
   @Put(':id/posts')
@@ -101,7 +90,5 @@ async publishToN8n(@Body() body: PublishPostDto) {
 
   return { status: 'ok' };
 }
-
-
 
 }

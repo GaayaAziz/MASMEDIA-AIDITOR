@@ -7,11 +7,13 @@ import { FacebookPublishingService } from './facebook-publishing.service';
 import { FacebookCredentialsService } from './facebook-credentials.service';
 import { FacebookCredentials, FacebookCredentialsSchema } from './entities/facebook-credentials.entity';
 import { PostsModule } from '../posts/posts.module';
+import { HotMomentModule } from '../hot-moment/hot-moment.module'; // ✅ import the provider’s module
 
 @Module({
   imports: [
     HttpModule,
     PostsModule,
+    HotMomentModule, // ✅ makes HotMomentService available to this module
     MongooseModule.forFeature([
       { name: FacebookCredentials.name, schema: FacebookCredentialsSchema },
     ]),

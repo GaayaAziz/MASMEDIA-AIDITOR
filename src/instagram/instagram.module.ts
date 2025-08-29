@@ -6,7 +6,8 @@ import { InstagramPublishingController } from '../instagram-publishing/instagram
 import { InstagramCredentialsService } from '../instagram-credentials/instagram-credentials.service';
 import { InstagramPublishingService } from '../instagram-publishing/instagram-publishing.service';
 import { InstagramCredentials, InstagramCredentialsSchema } from './entities/instagram-credentials.entity';
-import { PostsModule } from '../posts/posts.module'; 
+import { PostsModule } from '../posts/posts.module';
+import { HotMomentModule } from '../hot-moment/hot-moment.module'; // ✅ needed if controller uses HotMomentService
 
 @Module({
   imports: [
@@ -14,7 +15,8 @@ import { PostsModule } from '../posts/posts.module';
       { name: InstagramCredentials.name, schema: InstagramCredentialsSchema }
     ]),
     HttpModule,
-    PostsModule, 
+    PostsModule,
+    HotMomentModule, // ✅ provides HotMomentService to this module
   ],
   controllers: [
     InstagramAuthController,

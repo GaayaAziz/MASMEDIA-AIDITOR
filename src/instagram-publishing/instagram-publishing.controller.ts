@@ -2,6 +2,7 @@ import { Controller, Post, Body, Get, Param, HttpException, HttpStatus, Query } 
 import { InstagramPublishingService } from './instagram-publishing.service';
 import { InstagramCredentialsService } from '../instagram-credentials/instagram-credentials.service';
 import { PostsService } from '../posts/posts.service';
+import { HotMomentService } from 'src/hot-moment/hot-moment.service';
 
 @Controller('instagram')
 export class InstagramPublishingController {
@@ -9,6 +10,7 @@ export class InstagramPublishingController {
     private readonly instagramService: InstagramPublishingService,
     private readonly credentialsService: InstagramCredentialsService,
     private readonly postsService: PostsService,
+    private readonly hotMomentService: HotMomentService,
   ) {}
 
   @Post('publish/:postId')
@@ -136,9 +138,6 @@ export class InstagramPublishingController {
     }
   }
   
-  
-  
-
   @Post('test-publish')
   async testPublish(@Body() body: {
     caption: string;
@@ -470,6 +469,120 @@ export class InstagramPublishingController {
         `Error fetching Instagram post insights: ${error.message}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
+    }
+  }
+
+  @Post('publish-hot-moment/:hotMomentId')
+  async publishHotMoment(
+    @Param('hotMomentId') hotMomentId: string,
+    @Body()
+    body: {
+      userId?: string;
+      instagramAccountId?: string;
+      accessToken?: string;
+      captureIndex?: number;   // which capture to use (default 0)
+      force?: boolean;         // ignore local published state if remote media is gone
+      overrideCaption?: string; // optionally override caption
+      overrideImage?: string;   // optionally override image (public url or local path)
+    }
+  ) {
+    try {
+      // 1) Load the hot moment
+      const moment = await this.hotMomentService.getHotMomentById(hotMomentId);
+      if (!moment) {
+        throw new HttpException('Hot moment not found', HttpStatus.NOT_FOUND);
+      }
+  
+      // 2) Resolve credentials
+      let credentials: { instagramAccountId: string; accessToken: string };
+      if (body.instagramAccountId && body.accessToken) {
+        credentials = { instagramAccountId: body.instagramAccountId, accessToken: body.accessToken };
+      } else {
+        const stored = await this.credentialsService.getCredentials(body.userId || 'default');
+        if (!stored) {
+          throw new HttpException('Instagram credentials not found. Please authenticate first.', HttpStatus.UNAUTHORIZED);
+        }
+        credentials = {
+          instagramAccountId: stored.instagramAccountId,
+          accessToken: stored.instagramAccessToken,
+        };
+      }
+  
+      // 3) Validate credentials
+      const ok = await this.instagramService.validateCredentials(credentials.instagramAccountId, credentials.accessToken);
+      if (!ok) throw new HttpException('Invalid Instagram credentials', HttpStatus.UNAUTHORIZED);
+  
+      // 4) Already published? verify remote existence unless force
+      const prior = moment.publishedTo?.instagram;
+      if (prior?.published && prior?.publishedId && !body?.force) {
+        const exists = await this.instagramService.mediaExists(prior.publishedId, credentials.accessToken);
+        if (exists) {
+          throw new HttpException('Hot moment already published to Instagram', HttpStatus.CONFLICT);
+        } else {
+          await this.hotMomentService.clearPublishedHotMoment(hotMomentId, 'instagram');
+        }
+      }
+  
+      // 5) Caption
+      const caption =
+        body.overrideCaption?.trim() ||
+        moment.posts?.instagram?.toString()?.trim() ||
+        moment.posts?.facebook?.toString()?.trim() ||
+        moment.moment_title ||
+        'Check this out!';
+  
+      // 6) Choose image - FIXED: Use URL fields instead of path fields
+      // IG requires a single public image URL; GIFs are not supported in feed posts
+      let rawImage: string | undefined = body.overrideImage;
+      if (!rawImage && Array.isArray(moment.captures) && moment.captures.length > 0) {
+        const idx = Math.max(0, Math.min(moment.captures.length - 1, body.captureIndex ?? 0));
+        const cap = moment.captures[idx] as { 
+          offset: number; 
+          screenshotPath: string; 
+          gifPath: string;
+          screenshotUrl: string;
+          gifUrl: string;
+        };
+        
+        // For Instagram, prefer screenshot URL (no GIFs in feed posts)
+        rawImage = cap.screenshotUrl || undefined;
+      }
+  
+      if (!rawImage) {
+        throw new HttpException('Instagram requires a still image (screenshot). None found for this hot moment.', HttpStatus.BAD_REQUEST);
+      }
+  
+      // 7) Publish (the service will handle localhost URLs automatically)
+      const result = await this.instagramService.publishToInstagram({
+        caption,
+        imageUrl: rawImage,
+        instagramAccountId: credentials.instagramAccountId,
+        accessToken: credentials.accessToken,
+      });
+  
+      if (!result.success || !result.postId) {
+        throw new HttpException(`Failed to publish hot moment to Instagram: ${result.error}`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+  
+      // 8) Save state
+      await this.hotMomentService.markAsPublishedHotMoment(hotMomentId, 'instagram', result.postId);
+  
+      // 9) Permalink
+      const permalink = await this.instagramService.getPermalink(result.postId, credentials.accessToken);
+  
+      return {
+        success: true,
+        message: 'Hot moment published to Instagram',
+        instagramPostId: result.postId,
+        instagramUrl: permalink || null,
+        note:
+          prior?.published && !body?.force
+            ? 'Previous Instagram media no longer existed; state was reset and the hot moment was re-published.'
+            : undefined,
+      };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(`Error publishing hot moment to Instagram: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 }

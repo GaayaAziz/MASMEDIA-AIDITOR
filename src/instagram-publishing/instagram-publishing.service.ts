@@ -53,7 +53,41 @@ export class InstagramPublishingService {
       if (!resp.data?.id) throw new Error('Failed to get media ID from Instagram response');
       return resp.data.id as string;
     };
-
+  
+    const tryCreateWithBuffer = async (buffer: Buffer, filename: string) => {
+      const FormData = (await import('form-data')).default;
+      const form = new FormData();
+      form.append('image', buffer, { filename });
+      form.append('caption', caption);
+      form.append('access_token', accessToken);
+  
+      const headers = form.getHeaders();
+      const resp = await firstValueFrom(
+        this.httpService.post(`https://graph.facebook.com/v20.0/${instagramAccountId}/media`, form, { headers })
+      );
+      if (!resp.data?.id) throw new Error('Failed to get media ID from Instagram response');
+      return resp.data.id as string;
+    };
+  
+    // Check if it's a localhost URL
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(imageUrl);
+    
+    if (isLocalhost) {
+      try {
+        this.logger.log(`Uploading local image to Instagram: ${imageUrl}`);
+        // Fetch the image from localhost and upload as binary
+        const imageResponse = await firstValueFrom(
+          this.httpService.get(imageUrl, { responseType: 'arraybuffer' })
+        );
+        const buffer = Buffer.from(imageResponse.data);
+        const filename = imageUrl.split('/').pop() || 'image.jpg';
+        return await tryCreateWithBuffer(buffer, filename);
+      } catch (err: any) {
+        this.logger.error(`Local image upload failed: ${err.message}`);
+        throw err;
+      }
+    }
+  
     try {
       // 1) Try the original URL exactly as provided (keep query params)
       this.logger.log(`Creating IG media with original image (no crop): ${imageUrl}`);
@@ -62,8 +96,8 @@ export class InstagramPublishingService {
       // 2) If ratio is invalid, retry with padded, IG-safe transformations
       if (this.isAspectRatioError(error)) {
         this.logger.warn(`Original image rejected for aspect ratio. Retrying with padded IG-safe URL...`);
-
-        const squarePadded = this.buildIgSafeUrl(imageUrl, 'square'); // safest universal
+  
+        const squarePadded = this.buildIgSafeUrl(imageUrl, 'square');
         this.logger.log(`Retry (square padded): ${squarePadded}`);
         try {
           return await tryCreate(squarePadded);
@@ -75,17 +109,15 @@ export class InstagramPublishingService {
           } catch {
             const portraitPadded = this.buildIgSafeUrl(imageUrl, 'portrait');
             this.logger.log(`Retry (portrait padded 4:5): ${portraitPadded}`);
-            const respId = await tryCreate(portraitPadded);
-            return respId;
+            return await tryCreate(portraitPadded);
           }
         }
       }
-
+  
       // 3) Non-aspect errors: still try a padded fallback once
       this.logger.warn(`Create media failed (non-aspect issue). Trying square padded once...`);
       const padded = this.buildIgSafeUrl(imageUrl, 'square');
-      const respId = await tryCreate(padded);
-      return respId;
+      return await tryCreate(padded);
     }
   }
 
@@ -187,14 +219,47 @@ export class InstagramPublishingService {
       if (!resp.data?.id) throw new Error('Failed to get carousel media ID from Instagram response');
       return resp.data.id as string;
     };
-
+  
+    const tryCreateWithBuffer = async (buffer: Buffer, filename: string) => {
+      const FormData = (await import('form-data')).default;
+      const form = new FormData();
+      form.append('image', buffer, { filename });
+      form.append('is_carousel_item', 'true');
+      form.append('access_token', accessToken);
+  
+      const headers = form.getHeaders();
+      const resp = await firstValueFrom(
+        this.httpService.post(`https://graph.facebook.com/v20.0/${instagramAccountId}/media`, form, { headers })
+      );
+      if (!resp.data?.id) throw new Error('Failed to get carousel media ID from Instagram response');
+      return resp.data.id as string;
+    };
+  
+    // Check if it's a localhost URL
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(imageUrl);
+    
+    if (isLocalhost) {
+      try {
+        this.logger.log(`Uploading local carousel image to Instagram: ${imageUrl}`);
+        const imageResponse = await firstValueFrom(
+          this.httpService.get(imageUrl, { responseType: 'arraybuffer' })
+        );
+        const buffer = Buffer.from(imageResponse.data);
+        const filename = imageUrl.split('/').pop() || 'image.jpg';
+        return await tryCreateWithBuffer(buffer, filename);
+      } catch (err: any) {
+        this.logger.error(`Local carousel image upload failed: ${err.message}`);
+        throw err;
+      }
+    }
+  
     try {
       this.logger.log(`Creating IG carousel media with original image: ${imageUrl}`);
       return await tryCreate(imageUrl);
     } catch (error: any) {
       if (this.isAspectRatioError(error)) {
         this.logger.warn(`Carousel item rejected for aspect ratio. Retrying with padded IG-safe URL...`);
-
+  
         const squarePadded = this.buildIgSafeUrl(imageUrl, 'square');
         this.logger.log(`Retry (square padded): ${squarePadded}`);
         try {
@@ -211,8 +276,7 @@ export class InstagramPublishingService {
           }
         }
       }
-
-      // generic padded fallback
+  
       const padded = this.buildIgSafeUrl(imageUrl, 'square');
       return await tryCreate(padded);
     }
@@ -389,4 +453,7 @@ export class InstagramPublishingService {
       return null;
     }
   }
+
+ 
+  
 }
