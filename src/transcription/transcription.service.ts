@@ -63,56 +63,79 @@ export class TranscriptionService {
     }
   }
 
-  async captureMediaForHotMoment(
-    threadId: string,
-    title: string,
-    liveUrl: string,
-  ) {
-    const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const outputDir = path.join(CAPTURES_ROOT, threadId);
-    await fs.mkdir(outputDir, { recursive: true });
+async captureMediaForHotMoment(
+  threadId: string,
+  title: string,
+  liveUrl: string,
+) {
+  const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const outputDir = path.join(CAPTURES_ROOT, threadId);
+  await fs.mkdir(outputDir, { recursive: true });
 
-    const offsets = [75, 60, 45];
-    const captures = [];
+  const offsets = [75, 60, 45]; // 3 different time offsets
+  const captures = [];
 
-    for (const offset of offsets) {
-      const timestamp = Date.now();
-      const screenshotPath = path.join(outputDir, `${timestamp}_${safeTitle}_${offset}s.jpg`);
-      const gifPath = path.join(outputDir, `${timestamp}_${safeTitle}_${offset}s.gif`);
+  for (const offset of offsets) {
+    const timestamp = Date.now();
+    const screenshotPath = path.join(outputDir, `${timestamp}_${safeTitle}_${offset}s.jpg`);
+    const gifPath = path.join(outputDir, `${timestamp}_${safeTitle}_${offset}s.gif`);
 
-      const screenshotCmd = `streamlink --stdout "${liveUrl}" best | ffmpeg -y -ss ${offset} -i - -frames:v 1 -q:v 2 "${screenshotPath}"`;
-      const gifCmd = `streamlink --stdout "${liveUrl}" best | ffmpeg -y -ss ${offset} -i - -t 4 -vf "fps=10,scale=480:-1:flags=lanczos" "${gifPath}"`;
+    // Enhanced screenshot command with better quality
+    const screenshotCmd = `streamlink --stdout "${liveUrl}" best | ffmpeg -y -ss ${offset} -i - -frames:v 1 -q:v 2 -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" "${screenshotPath}"`;
+    
+    // Enhanced GIF command with better quality and longer duration
+    const gifCmd = `streamlink --stdout "${liveUrl}" best | ffmpeg -y -ss ${offset} -i - -t 6 -vf "fps=15,scale=640:360:flags=lanczos" "${gifPath}"`;
 
-      console.log(`📸 Capture à ${offset}s pour thread ${threadId}`);
+    console.log(`📸 Capture à ${offset}s pour thread ${threadId}`);
 
-      await new Promise<void>((resolve, reject) => {
-        exec(screenshotCmd, (err) => {
-          if (err) {
-            console.error(`Erreur screenshot à ${offset}s :`, err);
-            return reject(err);
-          }
-          resolve();
-        });
+    // Execute screenshot capture
+    await new Promise<void>((resolve, reject) => {
+      exec(screenshotCmd, { timeout: 30000 }, (err) => {
+        if (err) {
+          console.error(`Erreur screenshot à ${offset}s :`, err);
+          return reject(err);
+        }
+        resolve();
       });
+    });
 
-      await new Promise<void>((resolve, reject) => {
-        exec(gifCmd, (err) => {
-          if (err) {
-            console.error(`Erreur gif à ${offset}s :`, err);
-            return reject(err);
-          }
-          resolve();
-        });
+    // Execute GIF capture
+    await new Promise<void>((resolve, reject) => {
+      exec(gifCmd, { timeout: 45000 }, (err) => {
+        if (err) {
+          console.error(`Erreur gif à ${offset}s :`, err);
+          return reject(err);
+        }
+        resolve();
       });
+    });
 
-      const screenshotUrl = toPublicUrl(screenshotPath);
-      const gifUrl = toPublicUrl(gifPath);
-      captures.push({ offset, screenshotPath, gifPath, screenshotUrl, gifUrl });
+    // Verify files exist before creating URLs
+    const screenshotExists = await fs.pathExists(screenshotPath);
+    const gifExists = await fs.pathExists(gifPath);
+
+    if (!screenshotExists) {
+      throw new Error(`Screenshot not created at ${screenshotPath}`);
+    }
+    if (!gifExists) {
+      throw new Error(`GIF not created at ${gifPath}`);
     }
 
-    console.log(`✅ Captures terminées pour thread ${threadId}`, captures);
-    return captures;
+    const screenshotUrl = toPublicUrl(screenshotPath);
+    const gifUrl = toPublicUrl(gifPath);
+    
+    captures.push({ 
+      offset, 
+      screenshotPath, 
+      gifPath, 
+      screenshotUrl, 
+      gifUrl 
+    });
   }
+
+  console.log(`✅ Captures terminées pour thread ${threadId}`, captures);
+  return captures;
+}
 
   async transcribeFromLiveStream(liveUrl: string): Promise<void> {
     const outputDir = path.resolve('./segments');

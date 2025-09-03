@@ -19,6 +19,7 @@ import { FacebookPublishingService } from './facebook-publishing/facebook-publis
 import { HttpModule } from '@nestjs/axios';
 import { InstagramModule } from './instagram/instagram.module';
 import { LoggerMiddleware } from './middleware/logger.middleware';
+import { MediaController } from './media-controller/media-controller.controller';
 
 dotenv.config();
 
@@ -42,6 +43,7 @@ dotenv.config();
   controllers: [
     FacebookAuthController,
     FacebookPublishingController,
+    MediaController,
   ],
   providers: [
     FacebookPublishingService,

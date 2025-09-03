@@ -11,6 +11,8 @@ type Capture = {
   offset: number;
   screenshotPath: string;
   gifPath: string;
+  screenshotUrl: string; 
+  gifUrl: string;      
 };
 
 @Injectable()
@@ -307,29 +309,29 @@ Ne mets **aucune balise \`\`\`json**, ni phrase introductive, ni commentaire. Ju
     }
   }
 
-  private async saveHotMoment(
-    threadId: string,
-    title: string,
-    content: string,
-    posts?: {
-      twitter?: string[];
-      instagram?: string;
-      facebook?: string;
-      masmedia?: string;
-    },
-    captures?: Capture[],
-  ) {
-    const hotMoment = new this.hotMomentModel({
-      thread_id: threadId,
-      moment_title: title,
-      content: content.trim(),
-      posts: posts || undefined,
-      captures: captures || undefined,
-    });
+private async saveHotMoment(
+  threadId: string,
+  title: string,
+  content: string,
+  posts?: {
+    twitter?: string[];
+    instagram?: string;
+    facebook?: string;
+    masmedia?: string;
+  },
+  captures?: Capture[],
+) {
+  const hotMoment = new this.hotMomentModel({
+    thread_id: threadId,
+    moment_title: title,
+    content: content.trim(),
+    posts: posts || undefined,
+    captures: captures || undefined,
+  });
 
-    await hotMoment.save();
-    console.log(`✅ Hot moment sauvegardé: ${title}`);
-  }
+  await hotMoment.save();
+  console.log(`✅ Hot moment sauvegardé: ${title}`);
+}
 
   async finalizeThread(threadId: string) {
     const lastTitle = this.lastMomentTitleByThread[threadId];
