@@ -4,8 +4,12 @@ import { FacebookCredentialsService } from './facebook-credentials.service';
 import { PostsService } from '../posts/posts.service';
 import { HotMomentService } from 'src/hot-moment/hot-moment.service';
 
+import { Logger } from '@nestjs/common';
+
 @Controller('facebook')
 export class FacebookPublishingController {
+  private readonly logger = new Logger(FacebookPublishingController.name);
+
   constructor(
     private readonly facebookService: FacebookPublishingService,
     private readonly credentialsService: FacebookCredentialsService,
@@ -234,11 +238,11 @@ async publishHotMoment(
     userId?: string;
     pageId?: string;
     pageAccessToken?: string;
-    captureIndex?: number;   // which capture to use (default 0)
-    preferGif?: boolean;     // prefer GIF over screenshot when both exist
-    force?: boolean;         // ignore local published state if remote object is gone
-    overrideMessage?: string; // optionally override the text
-    overrideImage?: string;   // optionally override image (url or local path)
+    selectedImageIndices?: number[];
+    preferGif?: boolean;
+    force?: boolean;
+    overrideMessage?: string;
+    overrideImages?: string[];
   }
 ) {
   try {
@@ -283,54 +287,144 @@ async publishHotMoment(
       moment.moment_title ||
       'New update';
 
-    // 6) Choose media - Updated to use URL fields
-    let chosenMedia: string | undefined = body.overrideImage;
-    if (!chosenMedia && Array.isArray(moment.captures) && moment.captures.length > 0) {
-      const idx = Math.max(0, Math.min(moment.captures.length - 1, body.captureIndex ?? 0));
-      const cap = moment.captures[idx] as { 
-        offset: number; 
-        screenshotPath: string; 
-        gifPath: string;
-        screenshotUrl: string;
-        gifUrl: string;
-      };
+    // 6) Handle media selection - prefer one type per capture based on preferGif setting
+    let selectedMedia: string[] = [];
+    
+    if (body.overrideImages && body.overrideImages.length > 0) {
+      selectedMedia = body.overrideImages.slice(0, 6);
+    } else if (Array.isArray(moment.captures) && moment.captures.length > 0) {
+      const maxIndex = moment.captures.length - 1;
+      const indicesToUse = body.selectedImageIndices && body.selectedImageIndices.length > 0 
+        ? body.selectedImageIndices.filter(idx => idx >= 0 && idx <= maxIndex).slice(0, 6)
+        : Array.from({length: Math.min(moment.captures.length, 6)}, (_, i) => i);
       
-      if (body.preferGif && cap.gifUrl) {
-        chosenMedia = cap.gifUrl;
-      } else {
-        chosenMedia = cap.screenshotUrl || cap.gifUrl || undefined;
+      this.logger.log(`Processing ${indicesToUse.length} valid indices: [${indicesToUse.join(', ')}] from requested [${body.selectedImageIndices?.join(', ') || 'default'}]. Available captures: ${moment.captures.length}`);
+
+      // For each valid index, select ONE media item (prefer GIF if preferGif is true)
+      for (const idx of indicesToUse) {
+        const cap = moment.captures[idx] as { 
+          offset: number; 
+          screenshotPath?: string; 
+          gifPath?: string;
+          screenshotUrl?: string;
+          gifUrl?: string;
+        };
+        
+        // Helper function to construct URL from path
+        const constructUrl = (path: string): string | null => {
+          const normalizedPath = path.replace(/\\/g, '/');
+          const pathParts = normalizedPath.split('/');
+          const filename = pathParts.pop();
+          const threadFolder = pathParts.find(part => part.includes('thread_'));
+          
+          if (filename && threadFolder) {
+            return `http://localhost:3001/media/${threadFolder}/${filename}`;
+          } else if (filename) {
+            return `http://localhost:3001/media/${filename}`;
+          }
+          return null;
+        };
+
+        let mediaUrl: string | null = null;
+
+        if (body.preferGif) {
+          // Prefer GIF, fallback to screenshot
+          if (cap.gifUrl) {
+            mediaUrl = cap.gifUrl;
+          } else if (cap.gifPath) {
+            mediaUrl = constructUrl(cap.gifPath);
+          } else if (cap.screenshotUrl) {
+            mediaUrl = cap.screenshotUrl;
+          } else if (cap.screenshotPath) {
+            mediaUrl = constructUrl(cap.screenshotPath);
+          }
+        } else {
+          // Prefer screenshot, fallback to GIF
+          if (cap.screenshotUrl) {
+            mediaUrl = cap.screenshotUrl;
+          } else if (cap.screenshotPath) {
+            mediaUrl = constructUrl(cap.screenshotPath);
+          } else if (cap.gifUrl) {
+            mediaUrl = cap.gifUrl;
+          } else if (cap.gifPath) {
+            mediaUrl = constructUrl(cap.gifPath);
+          }
+        }
+
+        if (mediaUrl) {
+          selectedMedia.push(mediaUrl);
+        }
       }
     }
 
-    // 7) Publish
-    const result = await this.facebookService.publishToFacebook({
-      title: moment.moment_title,
-      message,
-      imageUrl: chosenMedia,
-      link: undefined,
-      pageId: credentials.pageId,
-      pageAccessToken: credentials.pageAccessToken,
-    });
+    // 7) Publish as single album or post
+    let result;
+    if (selectedMedia.length === 0) {
+      // Text only
+      result = await this.facebookService.publishToFacebook({
+        title: moment.moment_title,
+        message,
+        pageId: credentials.pageId,
+        pageAccessToken: credentials.pageAccessToken,
+      });
+      result = { success: result.success, postIds: result.success ? [result.postId!] : [], error: result.error };
+    } else if (selectedMedia.length === 1) {
+      // Single media item
+      const singleResult = await this.facebookService.publishToFacebook({
+        title: moment.moment_title,
+        message,
+        imageUrl: selectedMedia[0],
+        pageId: credentials.pageId,
+        pageAccessToken: credentials.pageAccessToken,
+      });
+      result = { success: singleResult.success, postIds: singleResult.success ? [singleResult.postId!] : [], error: singleResult.error };
+    } else {
+      // Multiple media items - create single album
+      result = await this.facebookService.publishMixedMediaAlbum({
+        message,
+        mediaUrls: selectedMedia,
+        pageId: credentials.pageId,
+        pageAccessToken: credentials.pageAccessToken,
+      });
+    }
 
-    if (!result.success || !result.postId) {
+    if (!result.success || !result.postIds || result.postIds.length === 0) {
       throw new HttpException(`Failed to publish hot moment to Facebook: ${result.error}`, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
-    // 8) Persist state
-    await this.hotMomentService.markAsPublishedHotMoment(hotMomentId, 'facebook', result.postId);
+    // 8) Persist state (use first post ID as primary)
+    await this.hotMomentService.markAsPublishedHotMoment(hotMomentId, 'facebook', result.postIds[0]);
 
-    // 9) Permalink
-    const permalink = await this.facebookService.getPermalink(result.postId, credentials.pageAccessToken);
+    // 9) Get permalink for first post
+    const permalink = await this.facebookService.getPermalink(result.postIds[0], credentials.pageAccessToken);
+
+    // 10) Analyze media types
+    const mediaTypes = selectedMedia.map(url => url.includes('.gif') ? 'gif' : 'image');
+    const gifCount = mediaTypes.filter(type => type === 'gif').length;
+    const imageCount = mediaTypes.filter(type => type === 'image').length;
 
     return {
       success: true,
-      message: 'Hot moment published to Facebook',
-      facebookPostId: result.postId,
-      facebookUrl: permalink ?? `https://www.facebook.com/${result.postId}`,
-      note:
-        prior?.published && !body?.force
-          ? 'Previous Facebook object no longer existed; state was reset and the hot moment was re-published.'
-          : undefined,
+      message: 'Hot moment published to Facebook as single album',
+      facebookPostIds: result.postIds,
+      primaryPostId: result.postIds[0],
+      facebookUrl: permalink ?? `https://www.facebook.com/${result.postIds[0]}`,
+      mediaUsed: selectedMedia,
+      totalPosts: result.postIds.length,
+      totalMediaItems: selectedMedia.length,
+      imageCount: imageCount,
+      gifCount: gifCount,
+      staticGifsInAlbum: gifCount, // GIFs will be static in album
+      mediaTypes: mediaTypes,
+      albumType: 'mixed_media_as_photos',
+      availableCapturesCount: moment.captures?.length || 0,
+      requestedIndicesCount: body.selectedImageIndices?.length || 0,
+      validIndicesProcessed: selectedMedia.length,
+      note: [
+        prior?.published && !body?.force ? 'Previous Facebook object no longer existed; state was reset and the hot moment was re-published.' : null,
+        gifCount > 0 ? `${gifCount} GIF(s) were included as static images in the album (Facebook album limitation).` : null,
+        `All ${selectedMedia.length} media items were combined into a single photo album.`
+      ].filter(Boolean).join(' '),
     };
   } catch (error) {
     if (error instanceof HttpException) throw error;

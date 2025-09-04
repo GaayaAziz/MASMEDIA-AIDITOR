@@ -498,10 +498,11 @@ async publishHotMoment(
     userId?: string;
     instagramAccountId?: string;
     accessToken?: string;
-    captureIndex?: number;
+    selectedImageIndices?: number[];
+    preferGif?: boolean; // This will be ignored for Instagram since GIFs aren't supported
     force?: boolean;
     overrideCaption?: string;
-    overrideImage?: string;
+    overrideImages?: string[];
   }
 ) {
   try {
@@ -510,6 +511,10 @@ async publishHotMoment(
     if (!moment) {
       throw new HttpException('Hot moment not found', HttpStatus.NOT_FOUND);
     }
+
+    this.logger.log(`Publishing hot moment: ${hotMomentId}`);
+    this.logger.log(`Available captures: ${moment.captures?.length || 0}`);
+    this.logger.log(`Requested indices: ${JSON.stringify(body.selectedImageIndices)}`);
 
     // 2) Resolve credentials
     let credentials: { instagramAccountId: string; accessToken: string };
@@ -549,60 +554,105 @@ async publishHotMoment(
       moment.moment_title ||
       'Check this out!';
 
-    // 6) Choose image with better URL handling
-    let rawImage: string | undefined = body.overrideImage;
-    if (!rawImage && Array.isArray(moment.captures) && moment.captures.length > 0) {
-      const idx = Math.max(0, Math.min(moment.captures.length - 1, body.captureIndex ?? 0));
-      const cap = moment.captures[idx] as { 
-        offset: number; 
-        screenshotPath: string; 
-        gifPath: string;
-        screenshotUrl: string;
-        gifUrl: string;
-      };
+    // 6) Handle image selection
+    let selectedImages: string[] = [];
+    
+    if (body.overrideImages && body.overrideImages.length > 0) {
+      selectedImages = body.overrideImages.slice(0, 10);
+      this.logger.log(`Using override images: ${selectedImages.length} images`);
+    } else if (Array.isArray(moment.captures) && moment.captures.length > 0) {
+      // Validate requested indices against actual array length
+      const maxIndex = moment.captures.length - 1;
+      const indicesToUse = body.selectedImageIndices && body.selectedImageIndices.length > 0 
+        ? body.selectedImageIndices.filter(idx => idx >= 0 && idx <= maxIndex).slice(0, 10)
+        : Array.from({length: Math.min(moment.captures.length, 10)}, (_, i) => i);
       
-      // Try screenshotUrl first
-      rawImage = cap.screenshotUrl;
+      this.logger.log(`Processing ${indicesToUse.length} valid indices from ${body.selectedImageIndices?.length || 0} requested: ${JSON.stringify(indicesToUse)}`);
+      this.logger.log(`Max available index: ${maxIndex}`);
       
-      // If no screenshotUrl, construct one from the path
-      if (!rawImage && cap.screenshotPath) {
-        const normalizedPath = cap.screenshotPath.replace(/\\/g, '/');
-        const pathParts = normalizedPath.split('/');
-        const filename = pathParts.pop();
-        const threadFolder = pathParts.find(part => part.includes('thread_'));
+      for (const idx of indicesToUse) {
+        const cap = moment.captures[idx] as { 
+          offset: number; 
+          screenshotPath?: string; 
+          gifPath?: string;
+          screenshotUrl?: string;
+          gifUrl?: string;
+        };
         
-        if (filename && threadFolder) {
-          // Use the correct URL pattern that matches your static serving
-          rawImage = `http://localhost:3001/media/${threadFolder}/${filename}`;
-        } else if (filename) {
-          rawImage = `http://localhost:3001/media/${filename}`;
+        this.logger.log(`Processing capture ${idx}:`, {
+          offset: cap.offset,
+          screenshotUrl: cap.screenshotUrl,
+          gifUrl: cap.gifUrl // Instagram doesn't support GIFs, but logging for debug
+        });
+        
+        let imageUrl: string | null = null;
+        
+        // Instagram doesn't support GIFs, always use screenshot
+        // Priority: screenshotUrl > constructed URL from screenshotPath
+        if (cap.screenshotUrl) {
+          imageUrl = cap.screenshotUrl;
+          this.logger.log(`Using screenshotUrl for capture ${idx}: ${imageUrl}`);
+        } else if (cap.screenshotPath) {
+          // Construct URL from path
+          const normalizedPath = cap.screenshotPath.replace(/\\/g, '/');
+          const pathParts = normalizedPath.split('/');
+          const filename = pathParts.pop();
+          const threadFolder = pathParts.find(part => part.includes('thread_'));
+          
+          if (filename && threadFolder) {
+            imageUrl = `http://localhost:3001/media/${threadFolder}/${filename}`;
+          } else if (filename) {
+            imageUrl = `http://localhost:3001/media/${filename}`;
+          }
+          this.logger.log(`Constructed URL from screenshotPath for capture ${idx}: ${imageUrl}`);
+        }
+        
+        if (imageUrl) {
+          selectedImages.push(imageUrl);
+          this.logger.log(`Added image ${selectedImages.length}: ${imageUrl}`);
+        } else {
+          this.logger.warn(`No valid image URL found for capture ${idx}`);
         }
       }
-      
-      this.logger.log(`Selected image for hot moment: ${rawImage} (from capture index ${idx})`);
     }
 
-    if (!rawImage) {
+    this.logger.log(`Final selected images: ${selectedImages.length} images`);
+
+    if (selectedImages.length === 0) {
       throw new HttpException(
-        'Instagram requires a still image (screenshot). No valid image URL or path found for this hot moment. Please check if the capture files exist.',
+        'Instagram requires at least one image. No valid images found for this hot moment.',
         HttpStatus.BAD_REQUEST
       );
     }
 
-    // 7) Log the image selection for debugging
-    this.logger.log(`Publishing hot moment with image: ${rawImage}`);
-    
-    // Check if image is localhost and set useCloudUpload flag
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(rawImage);
-    
-    // 8) Publish with cloud upload enabled for localhost URLs
-    const result = await this.instagramService.publishToInstagram({
-      caption,
-      imageUrl: rawImage,
-      instagramAccountId: credentials.instagramAccountId,
-      accessToken: credentials.accessToken,
-      useCloudUpload: isLocalhost,
-    });
+    // 7) Check if images are localhost and set useCloudUpload flag
+    const hasLocalhostImages = selectedImages.some(img => 
+      /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(img)
+    );
+
+    this.logger.log(`Has localhost images: ${hasLocalhostImages}`);
+
+    // 8) Publish - single image or carousel
+    let result;
+    if (selectedImages.length === 1) {
+      this.logger.log('Publishing single image to Instagram');
+      result = await this.instagramService.publishToInstagram({
+        caption,
+        imageUrl: selectedImages[0],
+        instagramAccountId: credentials.instagramAccountId,
+        accessToken: credentials.accessToken,
+        useCloudUpload: hasLocalhostImages,
+      });
+    } else {
+      this.logger.log(`Publishing carousel with ${selectedImages.length} images to Instagram`);
+      result = await this.instagramService.publishCarouselToInstagram({
+        caption,
+        imageUrls: selectedImages,
+        instagramAccountId: credentials.instagramAccountId,
+        accessToken: credentials.accessToken,
+        useCloudUpload: hasLocalhostImages,
+      });
+    }
 
     if (!result.success || !result.postId) {
       throw new HttpException(`Failed to publish hot moment to Instagram: ${result.error}`, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -619,7 +669,13 @@ async publishHotMoment(
       message: 'Hot moment published to Instagram',
       instagramPostId: result.postId,
       instagramUrl: permalink || null,
-      imageUsed: rawImage,
+      imagesUsed: selectedImages,
+      imageCount: selectedImages.length,
+      postType: selectedImages.length === 1 ? 'single' : 'carousel',
+      selectedIndices: body.selectedImageIndices || Array.from({length: Math.min(moment.captures?.length || 0, 10)}, (_, i) => i),
+      availableCapturesCount: moment.captures?.length || 0,
+      requestedIndicesCount: body.selectedImageIndices?.length || 0,
+      validIndicesProcessed: selectedImages.length,
       note: prior?.published && !body?.force
         ? 'Previous Instagram media no longer existed; state was reset and the hot moment was re-published.'
         : undefined,

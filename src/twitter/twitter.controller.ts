@@ -12,4 +12,14 @@ async tweetWithLocalImage(@Body() body: { text: string; imagePath: string }) {
   return this.twitterService.postTweetWithLocalImage(body.text, body.imagePath);
 }
 
+  @Post('post-multi')
+  async tweetFlexible(@Body() body: { text: string; images?: any; paths?: string[]; urls?: string[] }) {
+    return this.twitterService.postTweetFlexible(body);
+  }
+
+  @Post('post-urls')
+  async tweetWithUrls(@Body() body: { text: string; imagePath: string | string[] }) {
+    return this.twitterService.postTweetWithUrlsOnly(body);
+  }
+
 }

@@ -289,13 +289,12 @@ private validateImageBuffer(buffer: Buffer): boolean {
     }
   }
 
-  // Alternative method for carousel posts (multiple images)
 async publishCarouselToInstagram(postData: {
   caption: string;
   imageUrls: string[];
   instagramAccountId: string;
   accessToken: string;
-  useCloudUpload?: boolean; // New parameter
+  useCloudUpload?: boolean;
 }): Promise<{ success: boolean; postId?: string; error?: string }> {
   try {
     const { caption, imageUrls, instagramAccountId, accessToken, useCloudUpload = false } = postData;
@@ -314,15 +313,38 @@ async publishCarouselToInstagram(postData: {
       };
     }
 
+    this.logger.log(`Publishing Instagram carousel with ${imageUrls.length} images`);
+
     // Step 1: Create media objects for each image
     const mediaIds: string[] = [];
 
-    for (const imageUrl of imageUrls) {
-      const mediaId = useCloudUpload
-        ? await this.createCarouselMediaObjectWithCloudUpload(instagramAccountId, imageUrl, accessToken)
-        : await this.createCarouselMediaObject(instagramAccountId, imageUrl, accessToken);
-      mediaIds.push(mediaId);
+    for (let i = 0; i < imageUrls.length; i++) {
+      const imageUrl = imageUrls[i];
+      this.logger.log(`Processing carousel image ${i + 1}/${imageUrls.length}: ${imageUrl}`);
+      
+      try {
+        const mediaId = useCloudUpload
+          ? await this.createCarouselMediaObjectWithCloudUpload(instagramAccountId, imageUrl, accessToken)
+          : await this.createCarouselMediaObject(instagramAccountId, imageUrl, accessToken);
+        
+        mediaIds.push(mediaId);
+        this.logger.log(`Successfully created media object ${i + 1}, ID: ${mediaId}`);
+        
+        // Add delay between uploads to avoid rate limiting
+        if (i < imageUrls.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      } catch (error: any) {
+        this.logger.error(`Failed to create media object for image ${i + 1}: ${error.message}`);
+        throw new Error(`Failed to process image ${i + 1}: ${error.message}`);
+      }
     }
+
+    if (mediaIds.length === 0) {
+      throw new Error('No media objects were successfully created');
+    }
+
+    this.logger.log(`Created ${mediaIds.length} media objects, creating carousel container...`);
 
     // Step 2: Create carousel container
     const containerId = await this.createCarouselContainer(
@@ -331,6 +353,8 @@ async publishCarouselToInstagram(postData: {
       caption,
       accessToken
     );
+
+    this.logger.log(`Carousel container created with ID: ${containerId}`);
 
     // Step 3: Publish the carousel
     const postId = await this.publishMedia(instagramAccountId, containerId, accessToken);
@@ -420,7 +444,9 @@ private async createCarouselMediaObjectWithCloudUpload(
   const tryCreate = async (url: string) => {
     const payload = { image_url: url, is_carousel_item: true, access_token: accessToken };
     const resp = await firstValueFrom(
-      this.httpService.post(`https://graph.facebook.com/v20.0/${instagramAccountId}/media`, payload)
+      this.httpService.post(`https://graph.facebook.com/v20.0/${instagramAccountId}/media`, payload, {
+        timeout: 45000
+      })
     );
     if (!resp.data?.id) throw new Error('Failed to get carousel media ID from Instagram response');
     return resp.data.id as string;
@@ -433,89 +459,94 @@ private async createCarouselMediaObjectWithCloudUpload(
     try {
       this.logger.log(`Processing localhost carousel image for Instagram: ${imageUrl}`);
       
-      // Retry logic for fetching localhost images
       let buffer: Buffer;
       let lastError: any;
+      let workingUrl = imageUrl;
       
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          this.logger.log(`Carousel attempt ${attempt}/3 to fetch localhost image: ${imageUrl}`);
-          
-          const imageResponse = await firstValueFrom(
-            this.httpService.get(imageUrl, { 
-              responseType: 'arraybuffer',
-              timeout: 60000, // Increased timeout
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'image/*,*/*',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-              },
-              maxRedirects: 5
-            })
-          );
-          
-          buffer = Buffer.from(imageResponse.data);
-          this.logger.log(`Successfully fetched carousel image on attempt ${attempt}, size: ${buffer.length} bytes`);
-          break;
-          
-        } catch (fetchError: any) {
-          lastError = fetchError;
-          this.logger.warn(`Carousel attempt ${attempt}/3 failed: ${fetchError.message}`);
-          
-          if (attempt < 3) {
-            const delay = attempt === 1 ? 2000 : 5000;
-            this.logger.log(`Waiting ${delay}ms before retry...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+      // Build comprehensive URL list
+      const urlsToTry: string[] = [imageUrl];
+      
+      const urlParts = imageUrl.split('/');
+      const extractedFilename = urlParts.pop();
+      const threadFolder = urlParts.find(part => part.startsWith('thread_'));
+      
+      if (extractedFilename) {
+        const baseUrl = 'http://localhost:3001';
+        
+        const alternativeUrls = [
+          `${baseUrl}/media/${extractedFilename}`,
+          threadFolder ? `${baseUrl}/media/${threadFolder}/${extractedFilename}` : null,
+          `${baseUrl}/captures/${extractedFilename}`,
+          threadFolder ? `${baseUrl}/captures/${threadFolder}/${extractedFilename}` : null,
+        ].filter(Boolean);
+        
+        urlsToTry.push(...alternativeUrls);
+      }
+      
+      // Try each URL with retries
+      for (let urlIndex = 0; urlIndex < urlsToTry.length; urlIndex++) {
+        const currentUrl = urlsToTry[urlIndex];
+        let urlWorked = false;
+        
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            this.logger.log(`Carousel: Attempt ${attempt}/2 to fetch image (URL ${urlIndex + 1}): ${currentUrl}`);
+            
+            const imageResponse = await firstValueFrom(
+              this.httpService.get(currentUrl, { 
+                responseType: 'arraybuffer',
+                timeout: 30000,
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': 'image/*,*/*',
+                  'Cache-Control': 'no-cache'
+                },
+                maxRedirects: 5
+              })
+            );
+            
+            buffer = Buffer.from(imageResponse.data);
+            this.logger.log(`Carousel: Successfully fetched image from: ${currentUrl}, size: ${buffer.length} bytes`);
+            workingUrl = currentUrl;
+            urlWorked = true;
+            break;
+            
+          } catch (fetchError: any) {
+            lastError = fetchError;
+            const status = fetchError.response?.status;
+            
+            this.logger.warn(`Carousel: URL ${urlIndex + 1}, Attempt ${attempt}/2 failed: ${fetchError.message} (Status: ${status})`);
+            
+            if (status === 404) break; // Try next URL
+            
+            if (attempt < 2) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
           }
         }
+        
+        if (urlWorked && buffer) break;
       }
       
       if (!buffer!) {
-        throw new Error(`Failed to fetch localhost carousel image after 3 attempts. Last error: ${lastError?.message || 'Unknown error'}`);
+        throw new Error(`Failed to fetch localhost carousel image from any URL. Tried: ${urlsToTry.join(', ')}. Last error: ${lastError?.message}`);
       }
       
-      // Validate and process buffer
-      if (buffer.length === 0) {
-        throw new Error('Retrieved carousel image buffer is empty');
-      }
+      // Process and validate
+      const processedBuffer = await this.processImageBuffer(buffer);
+      const finalFilename = workingUrl.split('/').pop() || `carousel_image_${Date.now()}.jpg`;
       
-      if (!this.validateImageBuffer(buffer)) {
-        throw new Error('Retrieved carousel data is not a valid image file');
-      }
+      // Upload to cloud service
+      this.logger.log(`Uploading carousel image to cloud service: ${finalFilename}`);
+      const publicUrl = await this.uploadToCloudinaryAndGetUrl(processedBuffer, finalFilename);
       
-      const filename = imageUrl.split('/').pop() || 'carousel_image.jpg';
-      
-      // Upload to cloud service with retry
-      let publicUrl: string;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          this.logger.log(`Uploading carousel image to cloud service (attempt ${attempt}/2)...`);
-          publicUrl = await this.uploadToCloudinaryAndGetUrl(buffer, filename);
-          break;
-        } catch (uploadError: any) {
-          this.logger.error(`Carousel cloud upload attempt ${attempt} failed: ${uploadError.message}`);
-          if (attempt === 2) {
-            throw uploadError;
-          }
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        }
-      }
-      
-      // Now use the public URL with Instagram
-      return await tryCreate(publicUrl!);
+      // Create Instagram media object
+      this.logger.log(`Creating Instagram carousel media with cloud URL: ${publicUrl}`);
+      return await tryCreate(publicUrl);
       
     } catch (err: any) {
       this.logger.error(`Localhost carousel image processing failed: ${err.message}`);
-      
-      // Check if it's a network-related error
-      if (err.code === 'ECONNRESET' || err.code === 'ENOTFOUND' || 
-          err.message.includes('socket hang up') || err.message.includes('timeout') ||
-          err.message.includes('ETIMEDOUT') || err.message.includes('ECONNREFUSED')) {
-        throw new Error(`Network error accessing localhost carousel image. Please ensure the local server is running and accessible. Error: ${err.message}`);
-      }
-      
-      throw new Error(`Failed to process localhost carousel image for Instagram: ${err.message}`);
+      throw new Error(`Failed to process localhost carousel image: ${err.message}`);
     }
   }
 
@@ -529,24 +560,29 @@ private async createCarouselMediaObjectWithCloudUpload(
     if (this.isAspectRatioError(error)) {
       this.logger.warn(`Carousel item rejected for aspect ratio. Retrying with padded IG-safe URL...`);
 
-      const squarePadded = this.buildIgSafeUrl(imageUrl, 'square');
-      this.logger.log(`Retry (square padded): ${squarePadded}`);
-      try {
-        return await tryCreate(squarePadded);
-      } catch {
-        const landscapePadded = this.buildIgSafeUrl(imageUrl, 'landscape');
-        this.logger.log(`Retry (landscape padded 1.91:1): ${landscapePadded}`);
+      const fallbackUrls = [
+        { name: 'square', url: this.buildIgSafeUrl(imageUrl, 'square') },
+        { name: 'landscape', url: this.buildIgSafeUrl(imageUrl, 'landscape') },
+        { name: 'portrait', url: this.buildIgSafeUrl(imageUrl, 'portrait') }
+      ];
+
+      let lastError: any;
+      for (const fallback of fallbackUrls) {
         try {
-          return await tryCreate(landscapePadded);
-        } catch {
-          const portraitPadded = this.buildIgSafeUrl(imageUrl, 'portrait');
-          this.logger.log(`Retry (portrait padded 4:5): ${portraitPadded}`);
-          return await tryCreate(portraitPadded);
+          this.logger.log(`Carousel retry (${fallback.name}): ${fallback.url}`);
+          return await tryCreate(fallback.url);
+        } catch (err: any) {
+          this.logger.warn(`Carousel ${fallback.name} fallback failed: ${err.response?.data?.error?.message || err.message}`);
+          lastError = err;
         }
       }
+      
+      throw new Error(`All carousel aspect ratio fallbacks failed. Last error: ${lastError?.response?.data?.error?.message || lastError?.message}`);
     }
 
+    // Non-aspect ratio error - try one fallback
     const padded = this.buildIgSafeUrl(imageUrl, 'square');
+    this.logger.log(`Carousel retry with square padded: ${padded}`);
     return await tryCreate(padded);
   }
 }
