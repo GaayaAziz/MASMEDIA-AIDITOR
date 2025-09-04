@@ -11,14 +11,48 @@ export class MediaController {
   @Get('*')
   async serveMedia(@Param('0') filePath: string, @Res() res: Response) {
     try {
-      const safePath = path.join(this.capturesRoot, filePath);
+      // Handle nested paths like thread_xxx/filename.jpg
+      let safePath = path.join(this.capturesRoot, filePath);
       
       // Security check - ensure path is within captures directory
       if (!safePath.startsWith(this.capturesRoot)) {
         throw new HttpException('Invalid file path', HttpStatus.FORBIDDEN);
       }
 
-      const exists = await fs.pathExists(safePath);
+      let exists = await fs.pathExists(safePath);
+      
+      // If the direct path doesn't exist, try to find the file by name only
+      if (!exists) {
+        const filename = path.basename(filePath);
+        
+        // Search in all subdirectories for the file
+        const findFile = async (dir: string, targetFile: string): Promise<string | null> => {
+          try {
+            const items = await fs.readdir(dir, { withFileTypes: true });
+            
+            for (const item of items) {
+              const itemPath = path.join(dir, item.name);
+              
+              if (item.isFile() && item.name === targetFile) {
+                return itemPath;
+              } else if (item.isDirectory()) {
+                const found = await findFile(itemPath, targetFile);
+                if (found) return found;
+              }
+            }
+          } catch (error) {
+            // Ignore errors when searching
+          }
+          return null;
+        };
+        
+        const foundPath = await findFile(this.capturesRoot, filename);
+        if (foundPath) {
+          safePath = foundPath;
+          exists = true;
+        }
+      }
+
       if (!exists) {
         throw new HttpException('File not found', HttpStatus.NOT_FOUND);
       }
@@ -39,6 +73,9 @@ export class MediaController {
       } else {
         res.contentType('application/octet-stream');
       }
+
+      // Add cache headers
+      res.setHeader('Cache-Control', 'public, max-age=604800'); // 7 days
 
       // Stream the file
       const stream = fs.createReadStream(safePath);

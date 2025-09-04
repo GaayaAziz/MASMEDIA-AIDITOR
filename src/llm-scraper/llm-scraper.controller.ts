@@ -1,7 +1,7 @@
   import { Controller, Post, Get, Body, Query, Res, Sse } from '@nestjs/common';
   import { Response } from 'express';
   import { LlmScraperService } from './llm-scraper.service';
-  import { Observable } from 'rxjs';
+  import { Observable, map } from 'rxjs';
   import { MessageEvent } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 @ApiTags('llm-scraper')
@@ -11,7 +11,16 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
     @Sse('events')
     streamPosts(): Observable<MessageEvent> {
-      return this.llmScraperService.getPostStream();
+      return this.llmScraperService.getPostStream().pipe(
+        map(evt => {
+          const base: any = (evt as any)?.data || {};
+          if (base.type === 'post') {
+            const id = String(base.id || base._id || base.postId || base.sourceUrl || `tmp_${Date.now()}`);
+            return { data: { event: 'post', ...base, id, postId: id, _id: id } } as MessageEvent;
+          }
+          return { data: { event: base.type || 'unknown', ...base } } as MessageEvent;
+        })
+      );
     }
     @Post()
     runOne(@Body() body: { url: string; sourceName: string }) {

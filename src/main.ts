@@ -11,10 +11,16 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
 
+ // Updated static file serving to handle nested folder structure
   app.use('/media', express.static(join(process.cwd(), 'captures'), {
-  index: false,
-  maxAge: '7d',
-}));
+    index: false,
+    maxAge: '7d',
+    // Enable serving files from subdirectories
+    dotfiles: 'ignore',
+    etag: false,
+    extensions: ['jpg', 'jpeg', 'png', 'gif'],
+    fallthrough: true,
+  }));
 
   app.setGlobalPrefix('api'); // Préfixe global pour les routes
 

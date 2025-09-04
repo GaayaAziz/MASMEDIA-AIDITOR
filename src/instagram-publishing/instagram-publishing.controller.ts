@@ -6,6 +6,8 @@ import { HotMomentService } from 'src/hot-moment/hot-moment.service';
 
 @Controller('instagram')
 export class InstagramPublishingController {
+    private readonly logger = new Logger(InstagramPublishingController.name);
+
   constructor(
     private readonly instagramService: InstagramPublishingService,
     private readonly credentialsService: InstagramCredentialsService,
@@ -13,216 +15,232 @@ export class InstagramPublishingController {
     private readonly hotMomentService: HotMomentService,
   ) {}
 
-  @Post('publish/:postId')
-  async publishPost(
-    @Param('postId') postId: string,
-    @Body() body: {
-      userId?: string;
-      instagramAccountId?: string;
-      accessToken?: string;
-      force?: boolean;
-    }
-  ) {
-    try {
-      const post = await this.postsService.getPostById(postId);
-      if (!post) {
-        throw new HttpException('Post not found', HttpStatus.NOT_FOUND);
-      }
-  
-      // Credentials
-      let credentials: { instagramAccountId: string; accessToken: string };
-      if (body.instagramAccountId && body.accessToken) {
-        credentials = {
-          instagramAccountId: body.instagramAccountId,
-          accessToken: body.accessToken,
-        };
-      } else {
-        const storedCredentials = await this.credentialsService.getCredentials(
-          body.userId || 'default'
-        );
-        if (!storedCredentials) {
-          throw new HttpException(
-            'Instagram credentials not found. Please authenticate first.',
-            HttpStatus.UNAUTHORIZED
-          );
-        }
-        credentials = {
-          instagramAccountId: storedCredentials.instagramAccountId,
-          accessToken: storedCredentials.instagramAccessToken,
-        };
-      }
-  
-      const isValid = await this.instagramService.validateCredentials(
-        credentials.instagramAccountId,
-        credentials.accessToken
-      );
-      if (!isValid) {
-        throw new HttpException('Invalid Instagram credentials', HttpStatus.UNAUTHORIZED);
-      }
-  
-      // Already published? Verify it still exists remotely
-      const prior = post.publishedTo?.instagram;
-      if (prior?.published && prior?.publishedId && !body?.force) {
-        const stillExists = await this.instagramService.mediaExists(
-          prior.publishedId,
-          credentials.accessToken
-        );
-        if (stillExists) {
-          throw new HttpException('Post already published to Instagram', HttpStatus.CONFLICT);
-        } else {
-          await this.postsService.clearPublished(postId, 'instagram');
-        }
-      }
-  
-      if (!post.imageUrl) {
-        throw new HttpException(
-          'Instagram requires an image. This post has no image to publish.',
-          HttpStatus.BAD_REQUEST
-        );
-      }
-  
-      const caption =
-        post.platforms?.instagram ||
-        post.platforms?.facebook ||
-        post.platforms?.masmedia ||
-        post.platforms?.twitter ||
-        post.title ||
-        'Check out this post!';
-  
-      const result = await this.instagramService.publishToInstagram({
-        caption,
-        imageUrl: post.imageUrl,
-        instagramAccountId: credentials.instagramAccountId,
-        accessToken: credentials.accessToken,
-      });
-  
-      if (!result.success || !result.postId) {
-        throw new HttpException(
-          `Failed to publish to Instagram: ${result.error}`,
-          HttpStatus.INTERNAL_SERVER_ERROR
-        );
-      }
-  
-      // Get the official permalink (do NOT pass to markAsPublished, your schema has no field)
-      const permalink = await this.instagramService.getPermalink(
-        result.postId,
-        credentials.accessToken
-      );
-  
-      // Save publish state (3-arg signature)
-      await this.postsService.markAsPublished(postId, 'instagram', result.postId);
-  
-      return {
-        success: true,
-        message: 'Post published successfully to Instagram',
-        instagramPostId: result.postId,
-        instagramUrl: permalink || null,
-        originalPost: {
-          id: post._id,
-          title: post.title,
-          sourceName: post.sourceName,
-        },
-        note:
-          prior?.published && !body?.force
-            ? 'The previous Instagram media no longer existed; state was reset and the post was re-published.'
-            : undefined,
-      };
-    } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      throw new HttpException(
-        `Error publishing to Instagram: ${error.message}`,
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
-    }
-  }
-  
-  @Post('test-publish')
-  async testPublish(@Body() body: {
-    caption: string;
-    imageUrl: string;
+@Post('publish/:postId')
+async publishPost(
+  @Param('postId') postId: string,
+  @Body() body: {
     userId?: string;
     instagramAccountId?: string;
     accessToken?: string;
-  }) {
-    try {
-      if (!body.caption) {
-        throw new HttpException('Caption is required', HttpStatus.BAD_REQUEST);
-      }
+    force?: boolean;
+    useCloudUpload?: boolean; // Add this parameter
+  }
+) {
+  try {
+    const post = await this.postsService.getPostById(postId);
+    if (!post) {
+      throw new HttpException('Post not found', HttpStatus.NOT_FOUND);
+    }
 
-      if (!body.imageUrl) {
-        throw new HttpException('Image URL is required for Instagram posts', HttpStatus.BAD_REQUEST);
-      }
-
-      let credentials;
-      if (body.instagramAccountId && body.accessToken) {
-        credentials = {
-          instagramAccountId: body.instagramAccountId,
-          accessToken: body.accessToken,
-        };
-      } else {
-        const storedCredentials = await this.credentialsService.getCredentials(
-          body.userId || 'default'
-        );
-        
-        if (!storedCredentials) {
-          throw new HttpException(
-            'Instagram credentials not found. Please authenticate first.',
-            HttpStatus.UNAUTHORIZED
-          );
-        }
-        
-        credentials = {
-          instagramAccountId: storedCredentials.instagramAccountId,
-          accessToken: storedCredentials.instagramAccessToken,
-        };
-      }
-
-      const isValid = await this.instagramService.validateCredentials(
-        credentials.instagramAccountId,
-        credentials.accessToken
+    // Credentials validation (existing code)
+    let credentials: { instagramAccountId: string; accessToken: string };
+    if (body.instagramAccountId && body.accessToken) {
+      credentials = {
+        instagramAccountId: body.instagramAccountId,
+        accessToken: body.accessToken,
+      };
+    } else {
+      const storedCredentials = await this.credentialsService.getCredentials(
+        body.userId || 'default'
       );
-
-      if (!isValid) {
+      if (!storedCredentials) {
         throw new HttpException(
-          'Invalid Instagram credentials',
+          'Instagram credentials not found. Please authenticate first.',
           HttpStatus.UNAUTHORIZED
         );
       }
-
-      const result = await this.instagramService.publishToInstagram({
-        caption: body.caption,
-        imageUrl: body.imageUrl,
-        instagramAccountId: credentials.instagramAccountId,
-        accessToken: credentials.accessToken,
-      });
-
-      if (!result.success) {
-        throw new HttpException(
-          `Failed to publish: ${result.error}`,
-          HttpStatus.INTERNAL_SERVER_ERROR
-        );
-      }
-
-      return {
-        success: true,
-        message: 'Test post published successfully to Instagram',
-        instagramPostId: result.postId,
-        instagramUrl: `https://www.instagram.com/p/${result.postId}`,
+      credentials = {
+        instagramAccountId: storedCredentials.instagramAccountId,
+        accessToken: storedCredentials.instagramAccessToken,
       };
+    }
 
-    } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
+    const isValid = await this.instagramService.validateCredentials(
+      credentials.instagramAccountId,
+      credentials.accessToken
+    );
+    if (!isValid) {
+      throw new HttpException('Invalid Instagram credentials', HttpStatus.UNAUTHORIZED);
+    }
+
+    // Check existing publication status
+    const prior = post.publishedTo?.instagram;
+    if (prior?.published && prior?.publishedId && !body?.force) {
+      const stillExists = await this.instagramService.mediaExists(
+        prior.publishedId,
+        credentials.accessToken
+      );
+      if (stillExists) {
+        throw new HttpException('Post already published to Instagram', HttpStatus.CONFLICT);
+      } else {
+        await this.postsService.clearPublished(postId, 'instagram');
       }
-      
+    }
+
+    if (!post.imageUrl) {
       throw new HttpException(
-        error.message,
+        'Instagram requires an image. This post has no image to publish.',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // Get caption from platforms object - fix the caption extraction
+    const caption = post.platforms?.instagram || 
+                   post.platforms?.facebook || 
+                   post.platforms?.twitter || 
+                   post.title || 
+                   'Check out this post!';
+
+    // Check if image is localhost and determine useCloudUpload
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(post.imageUrl);
+    
+    const result = await this.instagramService.publishToInstagram({
+      caption,
+      imageUrl: post.imageUrl,
+      instagramAccountId: credentials.instagramAccountId,
+      accessToken: credentials.accessToken,
+      useCloudUpload: body.useCloudUpload || isLocalhost, // Enable cloud upload for localhost or when requested
+    });
+
+    if (!result.success || !result.postId) {
+      throw new HttpException(
+        `Failed to publish to Instagram: ${result.error}`,
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
+
+    const permalink = await this.instagramService.getPermalink(
+      result.postId,
+      credentials.accessToken
+    );
+
+    await this.postsService.markAsPublished(postId, 'instagram', result.postId);
+
+    return {
+      success: true,
+      message: 'Post published successfully to Instagram',
+      instagramPostId: result.postId,
+      instagramUrl: permalink || null,
+      originalPost: {
+        id: post._id,
+        title: post.title,
+        sourceName: post.sourceName,
+      },
+      note: prior?.published && !body?.force
+        ? 'The previous Instagram media no longer existed; state was reset and the post was re-published.'
+        : undefined,
+    };
+  } catch (error) {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+    throw new HttpException(
+      `Error publishing to Instagram: ${error.message}`,
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
   }
+}
+  
+@Post('test-publish')
+async testPublish(@Body() body: {
+  caption: string;
+  imageUrl: string;
+  userId?: string;
+  instagramAccountId?: string;
+  accessToken?: string;
+  useCloudUpload?: boolean; // Add this parameter
+}) {
+  try {
+    if (!body.caption) {
+      throw new HttpException('Caption is required', HttpStatus.BAD_REQUEST);
+    }
+
+    if (!body.imageUrl) {
+      throw new HttpException('Image URL is required for Instagram posts', HttpStatus.BAD_REQUEST);
+    }
+
+    // Validate caption length
+    if (body.caption.length > 2200) {
+      throw new HttpException('Caption too long. Instagram allows maximum 2200 characters.', HttpStatus.BAD_REQUEST);
+    }
+
+    let credentials;
+    if (body.instagramAccountId && body.accessToken) {
+      credentials = {
+        instagramAccountId: body.instagramAccountId,
+        accessToken: body.accessToken,
+      };
+    } else {
+      const storedCredentials = await this.credentialsService.getCredentials(
+        body.userId || 'default'
+      );
+      
+      if (!storedCredentials) {
+        throw new HttpException(
+          'Instagram credentials not found. Please authenticate first.',
+          HttpStatus.UNAUTHORIZED
+        );
+      }
+      
+      credentials = {
+        instagramAccountId: storedCredentials.instagramAccountId,
+        accessToken: storedCredentials.instagramAccessToken,
+      };
+    }
+
+    const isValid = await this.instagramService.validateCredentials(
+      credentials.instagramAccountId,
+      credentials.accessToken
+    );
+
+    if (!isValid) {
+      throw new HttpException(
+        'Invalid Instagram credentials',
+        HttpStatus.UNAUTHORIZED
+      );
+    }
+
+    // Check if image is localhost and determine useCloudUpload
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(body.imageUrl);
+
+    const result = await this.instagramService.publishToInstagram({
+      caption: body.caption,
+      imageUrl: body.imageUrl,
+      instagramAccountId: credentials.instagramAccountId,
+      accessToken: credentials.accessToken,
+      useCloudUpload: body.useCloudUpload || isLocalhost, // Enable cloud upload for localhost or when requested
+    });
+
+    if (!result.success) {
+      throw new HttpException(
+        `Failed to publish: ${result.error}`,
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+
+    const permalink = await this.instagramService.getPermalink(
+      result.postId,
+      credentials.accessToken
+    );
+
+    return {
+      success: true,
+      message: 'Test post published successfully to Instagram',
+      instagramPostId: result.postId,
+      instagramUrl: permalink || `https://www.instagram.com/p/${result.postId}`,
+    };
+
+  } catch (error) {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+    
+    throw new HttpException(
+      error.message,
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
+  }
+}
 
   @Post('publish-carousel')
   async publishCarousel(@Body() body: {
@@ -480,10 +498,10 @@ async publishHotMoment(
     userId?: string;
     instagramAccountId?: string;
     accessToken?: string;
-    captureIndex?: number;   // which capture to use (default 0)
-    force?: boolean;         // ignore local published state if remote media is gone
-    overrideCaption?: string; // optionally override caption
-    overrideImage?: string;   // optionally override image (public url or local path)
+    captureIndex?: number;
+    force?: boolean;
+    overrideCaption?: string;
+    overrideImage?: string;
   }
 ) {
   try {
@@ -498,7 +516,7 @@ async publishHotMoment(
     if (body.instagramAccountId && body.accessToken) {
       credentials = { instagramAccountId: body.instagramAccountId, accessToken: body.accessToken };
     } else {
-      const stored = await this.credentialsService.getCredentials(body.userId || 'default');
+      const stored = await this.credentialsService.getCredentials(body.userId || 'testuser');
       if (!stored) {
         throw new HttpException('Instagram credentials not found. Please authenticate first.', HttpStatus.UNAUTHORIZED);
       }
@@ -531,7 +549,7 @@ async publishHotMoment(
       moment.moment_title ||
       'Check this out!';
 
-    // 6) Choose image - Updated to use URL fields (Instagram requires screenshots, not GIFs)
+    // 6) Choose image with better URL handling
     let rawImage: string | undefined = body.overrideImage;
     if (!rawImage && Array.isArray(moment.captures) && moment.captures.length > 0) {
       const idx = Math.max(0, Math.min(moment.captures.length - 1, body.captureIndex ?? 0));
@@ -543,15 +561,38 @@ async publishHotMoment(
         gifUrl: string;
       };
       
-      // For Instagram, prefer screenshot URL (no GIFs in feed posts)
-      rawImage = cap.screenshotUrl || undefined;
+      // Try screenshotUrl first
+      rawImage = cap.screenshotUrl;
+      
+      // If no screenshotUrl, construct one from the path
+      if (!rawImage && cap.screenshotPath) {
+        const normalizedPath = cap.screenshotPath.replace(/\\/g, '/');
+        const pathParts = normalizedPath.split('/');
+        const filename = pathParts.pop();
+        const threadFolder = pathParts.find(part => part.includes('thread_'));
+        
+        if (filename && threadFolder) {
+          // Use the correct URL pattern that matches your static serving
+          rawImage = `http://localhost:3001/media/${threadFolder}/${filename}`;
+        } else if (filename) {
+          rawImage = `http://localhost:3001/media/${filename}`;
+        }
+      }
+      
+      this.logger.log(`Selected image for hot moment: ${rawImage} (from capture index ${idx})`);
     }
 
     if (!rawImage) {
-      throw new HttpException('Instagram requires a still image (screenshot). None found for this hot moment.', HttpStatus.BAD_REQUEST);
+      throw new HttpException(
+        'Instagram requires a still image (screenshot). No valid image URL or path found for this hot moment. Please check if the capture files exist.',
+        HttpStatus.BAD_REQUEST
+      );
     }
 
-    // 7) Check if image is localhost and set useCloudUpload flag
+    // 7) Log the image selection for debugging
+    this.logger.log(`Publishing hot moment with image: ${rawImage}`);
+    
+    // Check if image is localhost and set useCloudUpload flag
     const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(rawImage);
     
     // 8) Publish with cloud upload enabled for localhost URLs
@@ -560,7 +601,7 @@ async publishHotMoment(
       imageUrl: rawImage,
       instagramAccountId: credentials.instagramAccountId,
       accessToken: credentials.accessToken,
-      useCloudUpload: isLocalhost, // Enable cloud upload for localhost URLs
+      useCloudUpload: isLocalhost,
     });
 
     if (!result.success || !result.postId) {
@@ -578,16 +619,17 @@ async publishHotMoment(
       message: 'Hot moment published to Instagram',
       instagramPostId: result.postId,
       instagramUrl: permalink || null,
-      note:
-        prior?.published && !body?.force
-          ? 'Previous Instagram media no longer existed; state was reset and the hot moment was re-published.'
-          : undefined,
+      imageUsed: rawImage,
+      note: prior?.published && !body?.force
+        ? 'Previous Instagram media no longer existed; state was reset and the hot moment was re-published.'
+        : undefined,
     };
   } catch (error) {
     if (error instanceof HttpException) throw error;
     throw new HttpException(`Error publishing hot moment to Instagram: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 }
+
 @Get('debug-credentials/:userId')
 async debugCredentials(@Param('userId') userId: string) {
   try {

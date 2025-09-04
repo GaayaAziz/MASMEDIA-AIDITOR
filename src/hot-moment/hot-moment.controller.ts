@@ -1,14 +1,16 @@
-import { Body, Controller, Post , Get , Put , Param , Sse , MessageEvent} from '@nestjs/common';
+import { Body, Controller, Post , Get , Put , Param , Sse , MessageEvent, BadRequestException } from '@nestjs/common';
 import { HotMomentService } from './hot-moment.service';
 import { AnalyzeParagraphDto } from './dto/analyze-paragraph.dto';
 import { FinalizeThreadDto } from './dto/finalize-thread.dto';
 import { HttpService } from '@nestjs/axios';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { Observable, filter, map } from 'rxjs';
+import { ApiTags } from '@nestjs/swagger';
 
 
 
 
+@ApiTags('hot-moment')
 
 @Controller('hot-moment')
 export class HotMomentController {
@@ -20,13 +22,29 @@ export class HotMomentController {
   @Sse('stream/:threadId')
 streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
   return this.hotMomentService.postStream$.pipe(
-    filter(data => data.threadId === threadId),
-    map(data => ({
-      data, // contains: threadId, title, posts, captures
-    }))
+    filter(ev => ev.threadId === threadId && (ev.type || 'hot-moment') === 'hot-moment'),
+    map(ev => ({ data: { type: 'hot-moment', ...ev } }))
   );
 }
 
+  @Sse('stream')
+  streamAll(): Observable<MessageEvent> {
+    return this.hotMomentService.postStream$.pipe(
+      filter(ev => (ev.type || 'hot-moment') === 'hot-moment'),
+      map(ev => ({ data: { type: 'hot-moment', ...ev } }))
+    );
+  }
+
+  @Get('')
+  getAllHotMoments() {
+    return this.hotMomentService.getAllHotMoments();
+  }
+
+  // 🔍 Debug: liste les captures (fichiers réels disque) pour un thread
+  @Get('captures/:threadId')
+  listCaptures(@Param('threadId') threadId: string) {
+    return this.hotMomentService.listCaptures(threadId);
+  }
 
   /** ✅ Crée un thread pour un nouveau live */
   @Post('create-thread')
@@ -64,7 +82,17 @@ streamPosts(@Param('threadId') threadId: string): Observable<MessageEvent> {
   // 2. Get social posts by hotMomentId
   @Get(':id/posts')
   getPosts(@Param('id') id: string) {
+    // Simple validation d'ObjectId (24 hex chars)
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      throw new BadRequestException('Invalid hot moment id format');
+    }
     return this.hotMomentService.getPostsByHotMomentId(id);
+  }
+
+  // 2b. Get all posts for a thread (liste résumée)
+  @Get('thread/:threadId/posts')
+  getPostsForThread(@Param('threadId') threadId: string) {
+    return this.hotMomentService.getPostsByThread(threadId);
   }
 
   // 3. Update social posts by hotMomentId

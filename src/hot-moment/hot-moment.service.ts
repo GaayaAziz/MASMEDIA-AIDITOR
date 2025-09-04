@@ -5,6 +5,8 @@ import OpenAI from 'openai';
 import { ChatCompletionMessageParam } from 'openai/resources';
 import { HotMoment } from './schemas/hot-moment.schema';
 import { Subject } from 'rxjs';
+import * as fs from 'fs-extra';
+import * as path from 'path';
 
 
 type Capture = {
@@ -19,12 +21,16 @@ type Capture = {
 export class HotMomentService {
   private openai: OpenAI;
   public postStream$ = new Subject<{
-  threadId: string;
-  title: string;
-  posts: any;
+    threadId: string;
+    title: string;
+    posts: any;
     captures: any[];
-
-}>();
+    id?: any;
+    content?: string;
+    createdAt?: Date;
+    history?: boolean; // flag pour éléments historiques envoyés au démarrage
+  type?: string; // 'hot-moment' | 'hot-moment-progress'
+  }>();
 
   private threadsHistory: Record<
     string,
@@ -165,13 +171,7 @@ Réponds STRICTEMENT en JSON comme ceci :
           );
 
           const captures = this.pendingCaptures[threadId] || [];
-          // ✅ STREAM posts + captures BEFORE saving to DB
-            this.postStream$.next({
-              threadId,
-              title: lastTitle,
-              posts,
-              captures,
-            });
+          // Désormais on n'émet PLUS avant la sauvegarde: emission centralisée dans saveHotMoment
           await this.saveHotMoment(
             threadId,
             lastTitle,
@@ -331,6 +331,23 @@ private async saveHotMoment(
 
   await hotMoment.save();
   console.log(`✅ Hot moment sauvegardé: ${title}`);
+
+  // 🚀 Émission temps réel après sauvegarde
+  try {
+    this.postStream$.next({
+      threadId,
+      title,
+      posts: posts || {},
+      captures: captures || [],
+      id: hotMoment._id,
+      content: content.trim(),
+      createdAt: (hotMoment as any).createdAt,
+      type: 'hot-moment',
+    });
+  } catch (e) {
+    console.error('Erreur émission SSE hot-moment:', e);
+  }
+
 }
 
   async finalizeThread(threadId: string) {
@@ -352,8 +369,8 @@ private async saveHotMoment(
   }
 
   async getPostsByHotMomentId(hotMomentId: string) {
-    const moment = await this.hotMomentModel.findById(hotMomentId).exec();
-    return moment?.posts || null;
+  const moment = await this.hotMomentModel.findById(hotMomentId).exec();
+  return moment?.posts || null;
   }
 
   async updatePostsByHotMomentId(hotMomentId: string, newPosts: any) {
@@ -399,6 +416,71 @@ private async saveHotMoment(
         },
       }
     );
+  }
+
+  async getAllHotMoments() {
+    return this.hotMomentModel.find().exec();
+  }
+
+  async getRecentHotMoments(limit = 50) {
+    const docs = await this.hotMomentModel
+      .find({}, null)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return docs.reverse(); // renvoyer dans l'ordre chronologique
+  }
+
+  async getRecentHotMomentsByThread(threadId: string, limit = 50) {
+    const docs = await this.hotMomentModel
+      .find({ thread_id: threadId }, null)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return docs.reverse();
+  }
+
+  /** Récupère uniquement les posts de tous les hot moments d'un thread */
+  async getPostsByThread(threadId: string) {
+    const docs = await this.hotMomentModel
+      .find({ thread_id: threadId }, { posts: 1, moment_title: 1, createdAt: 1 })
+      .sort({ createdAt: 1 })
+      .lean();
+    return docs.map(d => ({
+      id: d._id,
+      title: (d as any).moment_title,
+      createdAt: (d as any).createdAt,
+      posts: (d as any).posts || null,
+    }));
+  }
+
+  /**
+   * Liste les captures (jpg/gif) réellement présentes sur le disque pour un thread.
+   * Utile pour debug d'URLs cassées.
+   */
+  async listCaptures(threadId: string) {
+    const dir = path.join(process.cwd(), 'captures', threadId);
+    const exists = await fs.pathExists(dir);
+    if (!exists) return [];
+
+    const files = await fs.readdir(dir);
+    const base = process.env.PUBLIC_BASE_URL || 'http://localhost:3001';
+    const stats = await Promise.all(
+      files
+        .filter(f => /\.(jpg|jpeg|png|gif)$/i.test(f))
+        .map(async (f) => {
+          const abs = path.join(dir, f);
+          const s = await fs.stat(abs);
+          return {
+            file: f,
+            size: s.size,
+            modifiedAt: s.mtime,
+            type: f.toLowerCase().endsWith('.gif') ? 'gif' : 'image',
+            url: `${base}/media/${encodeURIComponent(threadId)}/${encodeURIComponent(f)}`,
+          };
+        })
+    );
+    return stats.sort((a, b) => a.file.localeCompare(b.file));
   }
 
 }

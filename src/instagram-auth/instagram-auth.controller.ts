@@ -3,7 +3,7 @@
     import axios from 'axios';
     import { InstagramCredentialsService } from '../instagram-credentials/instagram-credentials.service';
     import { InstagramPublishingService } from '../instagram-publishing/instagram-publishing.service';
-
+import { ApiTags } from '@nestjs/swagger';
     interface FbPage {
     id: string;
     name: string;
@@ -24,6 +24,7 @@
     account_type?: string;
     }
 
+@ApiTags('auth/instagram')
     @Controller('auth/instagram')
     export class InstagramAuthController {
     private readonly logger = new Logger(InstagramAuthController.name);

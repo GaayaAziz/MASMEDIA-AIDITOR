@@ -14,7 +14,22 @@ import { MessageEvent } from '@nestjs/common';
 export interface PostEvent extends MessageEvent {
   data: {
     type: 'post' | 'error';
-    payload: any;
+    // pour type 'post'
+    id?: string;
+    postId?: string;
+    _id?: string;
+    createdAt?: Date | string;
+    key?: string;
+    synthetic?: boolean;
+    title?: string;
+    sourceUrl?: string;
+    sourceName?: string;
+    imageUrl?: string | null;
+    platforms?: any;
+    // pour type 'error'
+    msg?: string;
+    link?: string;
+    url?: string;
   };
 }
 @Injectable()
@@ -32,6 +47,7 @@ export class LlmScraperService {
   ) {
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
+
   getPostStream(): Observable<PostEvent> {
     return this.postSubject.asObservable();
   }
@@ -47,25 +63,45 @@ export class LlmScraperService {
           const articleTxt  = this.extractText(articleHtml);
           const postDraft   = await this.generatePosts(articleTxt, link, sourceName);
 
-          /* 1️⃣  Stream to clients immediately  */
-          this.postSubject.next({ data: { type: 'post', payload: postDraft } });
+          let saved: any = null;
+          try {
+            saved = await this.postsService.createPost(postDraft as any);
+          } catch(dbErr:any) {
+            this.logger.error(`DB create failed (${link}): ${dbErr.message}`);
+          }
 
-          /* 2️⃣  Fire-and-forget DB write — no await  */
-          this.postsService
-              .createPost(postDraft)
-              .catch(err => this.logger.error(`Mongo save error: ${err.message}`));
+          const finalId = saved?._id ? String(saved._id) : `synthetic_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+          const createdAt = (saved as any)?.createdAt || new Date();
+          const key = `${sourceName}|${postDraft.title}|${postDraft.imageUrl || ''}`;
 
-        } catch (err) {
+          // Log debug pour vérifier l'ID émis
+          this.logger.debug(`Emitting post event id=${finalId} synthetic=${!saved}`);
+
+          this.postSubject.next({
+            data: {
+              type: 'post',
+              id: finalId,
+              postId: finalId,
+              _id: finalId,
+              createdAt,
+              key,
+              synthetic: !saved,
+              ...postDraft,
+              sourceName: postDraft.sourceName,
+            }
+          });
+
+        } catch (err:any) {
           this.logger.warn(`Article skipped (${link}): ${err.message}`);
-          this.postSubject.next({ data: { type: 'error', payload: { link, msg: err.message } } });
+          this.postSubject.next({ data: { type: 'error', link, msg: err.message } });
         }
       }
 
       await this.logModel.create({ url, sourceName, status: 'success' });
 
-    } catch (err) {
+    } catch (err:any) {
       await this.logModel.create({ url, sourceName, status: 'failed', error: err.message });
-      this.postSubject.next({ data: { type: 'error', payload: { url, msg: err.message } } });
+      this.postSubject.next({ data: { type: 'error', url, msg: err.message } });
     }
   }
   

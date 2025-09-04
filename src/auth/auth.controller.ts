@@ -10,7 +10,7 @@ import { ResetPasswordDto } from './dtos/reset-password.dto';
 import { ApiTags } from '@nestjs/swagger';
 
 @Controller('auth')
-@ApiTags('auth')
+@ApiTags('authentication')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 

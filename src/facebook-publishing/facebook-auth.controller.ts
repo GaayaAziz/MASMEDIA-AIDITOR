@@ -11,7 +11,9 @@ interface FbPage {
   access_token: string;
   category?: string;
 }
+import { ApiTags } from '@nestjs/swagger';
 
+@ApiTags('auth/facebook')
 @Controller('auth/facebook')
 export class FacebookAuthController {
   private readonly logger = new Logger(FacebookAuthController.name);

@@ -13,7 +13,7 @@ async publishToInstagram(postData: {
   imageUrl?: string;
   instagramAccountId: string;
   accessToken: string;
-  useCloudUpload?: boolean; // New parameter to enable cloud upload for localhost URLs
+  useCloudUpload?: boolean;
 }): Promise<{ success: boolean; postId?: string; error?: string }> {
   try {
     const { caption, imageUrl, instagramAccountId, accessToken, useCloudUpload = false } = postData;
@@ -25,10 +25,26 @@ async publishToInstagram(postData: {
       };
     }
 
-    // Step 1: Create media object (upload image) - choose method based on useCloudUpload flag
+    // Validate caption length (Instagram limit is 2200 characters)
+    if (caption.length > 2200) {
+      this.logger.warn(`Caption too long (${caption.length} chars), truncating to 2200`);
+      postData.caption = caption.substring(0, 2197) + '...';
+    }
+
+    // Check image URL accessibility before proceeding
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(imageUrl);
+    
+    if (isLocalhost && !useCloudUpload) {
+      return {
+        success: false,
+        error: 'Instagram cannot access localhost URLs. Please set useCloudUpload=true to upload via cloud service.'
+      };
+    }
+
+    // Step 1: Create media object
     const mediaId = useCloudUpload 
-      ? await this.createMediaObjectWithCloudUpload(instagramAccountId, imageUrl, caption, accessToken)
-      : await this.createMediaObject(instagramAccountId, imageUrl, caption, accessToken);
+      ? await this.createMediaObjectWithCloudUpload(instagramAccountId, imageUrl, postData.caption, accessToken)
+      : await this.createMediaObject(instagramAccountId, imageUrl, postData.caption, accessToken);
 
     // Step 2: Publish the media
     const postId = await this.publishMedia(instagramAccountId, mediaId, accessToken);
@@ -40,6 +56,30 @@ async publishToInstagram(postData: {
     this.logger.error(`Failed to publish to Instagram: ${error.message}`);
     return { success: false, error: error.message };
   }
+}
+
+private buildWeservUrl(
+  originalUrl: string,
+  mode: 'square' | 'portrait' | 'landscape' = 'square'
+): string {
+  // Remove protocol from URL
+  const noProto = originalUrl.replace(/^https?:\/\//i, '');
+  
+  // Define dimensions and parameters based on mode
+  let params: string;
+  switch (mode) {
+    case 'portrait':
+      params = 'w=1080&h=1350&fit=contain&bg=white&output=jpg&q=85';
+      break;
+    case 'landscape':
+      params = 'w=1080&h=566&fit=contain&bg=white&output=jpg&q=85';
+      break;
+    default: // square
+      params = 'w=1080&h=1080&fit=contain&bg=white&output=jpg&q=85';
+      break;
+  }
+
+  return `https://images.weserv.nl/?url=${encodeURIComponent(noProto)}&${params}`;
 }
   // Updated createMediaObject method
 private async createMediaObject(
@@ -65,7 +105,7 @@ private async createMediaObject(
     throw new Error(`Instagram requires publicly accessible image URLs. Localhost images cannot be published to Instagram. Please use a publicly accessible image URL or upload the image to a cloud service first.`);
   }
 
-  // For public URLs
+  // For public URLs - try original first
   try {
     this.logger.log(`Creating IG media with original image (no crop): ${imageUrl}`);
     return await tryCreate(imageUrl);
@@ -73,28 +113,46 @@ private async createMediaObject(
     this.logger.error(`Original URL failed:`, error.response?.data);
     
     if (this.isAspectRatioError(error)) {
-      this.logger.warn(`Original image rejected for aspect ratio. Retrying with padded IG-safe URL...`);
+      this.logger.warn(`Original image rejected for aspect ratio. Retrying with padded IG-safe URLs...`);
 
-      const squarePadded = this.buildIgSafeUrl(imageUrl, 'square');
-      this.logger.log(`Retry (square padded): ${squarePadded}`);
-      try {
-        return await tryCreate(squarePadded);
-      } catch {
-        const landscapePadded = this.buildIgSafeUrl(imageUrl, 'landscape');
-        this.logger.log(`Retry (landscape padded 1.91:1): ${landscapePadded}`);
+      // Try multiple fallback strategies
+      const fallbackUrls = [
+        { name: 'square', url: this.buildIgSafeUrl(imageUrl, 'square') },
+        { name: 'landscape', url: this.buildIgSafeUrl(imageUrl, 'landscape') },
+        { name: 'portrait', url: this.buildIgSafeUrl(imageUrl, 'portrait') },
+        // Add weserv.nl fallbacks as additional options
+        { name: 'weserv-square', url: this.buildWeservUrl(imageUrl, 'square') },
+        { name: 'weserv-landscape', url: this.buildWeservUrl(imageUrl, 'landscape') }
+      ];
+
+      let lastError: any;
+      for (const fallback of fallbackUrls) {
         try {
-          return await tryCreate(landscapePadded);
-        } catch {
-          const portraitPadded = this.buildIgSafeUrl(imageUrl, 'portrait');
-          this.logger.log(`Retry (portrait padded 4:5): ${portraitPadded}`);
-          return await tryCreate(portraitPadded);
+          this.logger.log(`Retry (${fallback.name}): ${fallback.url}`);
+          return await tryCreate(fallback.url);
+        } catch (err: any) {
+          this.logger.warn(`${fallback.name} fallback failed: ${err.response?.data?.error?.message || err.message}`);
+          lastError = err;
+          // Add small delay between retries
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
+      
+      // If all fallbacks fail, throw the last error
+      throw new Error(`All aspect ratio fallbacks failed. Last error: ${lastError?.response?.data?.error?.message || lastError?.message}`);
     }
 
+    // For non-aspect ratio errors, try one fallback
     this.logger.warn(`Create media failed (non-aspect issue). Trying square padded once...`);
-    const padded = this.buildIgSafeUrl(imageUrl, 'square');
-    return await tryCreate(padded);
+    try {
+      const padded = this.buildIgSafeUrl(imageUrl, 'square');
+      return await tryCreate(padded);
+    } catch (fallbackError: any) {
+      // Try weserv as final fallback
+      const weservUrl = this.buildWeservUrl(imageUrl, 'square');
+      this.logger.log(`Final fallback attempt with weserv: ${weservUrl}`);
+      return await tryCreate(weservUrl);
+    }
   }
 }
 
@@ -287,7 +345,7 @@ async publishCarouselToInstagram(postData: {
 }
 
 
-  private async uploadToCloudinaryAndGetUrl(buffer: Buffer, filename: string): Promise<string> {
+private async uploadToCloudinaryAndGetUrl(buffer: Buffer, filename: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
   const apiSecret = process.env.CLOUDINARY_API_SECRET;
@@ -317,11 +375,18 @@ async publishCarouselToInstagram(postData: {
   form.append('signature', signature);
 
   try {
+    this.logger.log(`Uploading ${buffer.length} bytes to Cloudinary...`);
+    
     const response = await firstValueFrom(
       this.httpService.post(
         `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
         form,
-        { headers: form.getHeaders(), timeout: 30000 }
+        { 
+          headers: form.getHeaders(), 
+          timeout: 90000, // Increased timeout to 90 seconds
+          maxBodyLength: 50 * 1024 * 1024, // 50MB max body
+          maxContentLength: 50 * 1024 * 1024
+        }
       )
     );
 
@@ -329,10 +394,20 @@ async publishCarouselToInstagram(postData: {
       throw new Error('Failed to get secure URL from Cloudinary response');
     }
 
-    this.logger.log(`Uploaded to Cloudinary: ${response.data.secure_url}`);
+    this.logger.log(`Successfully uploaded to Cloudinary: ${response.data.secure_url}`);
     return response.data.secure_url;
   } catch (error: any) {
     this.logger.error(`Cloudinary upload failed: ${error.message}`);
+    
+    // Provide more specific error messages
+    if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+      throw new Error(`Cloudinary upload timed out. This may be due to a large file or slow connection. File size: ${buffer.length} bytes`);
+    }
+    
+    if (error.response?.data?.error?.message) {
+      throw new Error(`Cloudinary error: ${error.response.data.error.message}`);
+    }
+    
     throw new Error(`Failed to upload image to cloud service: ${error.message}`);
   }
 }
@@ -358,40 +433,88 @@ private async createCarouselMediaObjectWithCloudUpload(
     try {
       this.logger.log(`Processing localhost carousel image for Instagram: ${imageUrl}`);
       
-      // Fetch the image from localhost
-      const imageResponse = await firstValueFrom(
-        this.httpService.get(imageUrl, { 
-          responseType: 'arraybuffer',
-          timeout: 30000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'image/*,*/*',
-            'Cache-Control': 'no-cache'
+      // Retry logic for fetching localhost images
+      let buffer: Buffer;
+      let lastError: any;
+      
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          this.logger.log(`Carousel attempt ${attempt}/3 to fetch localhost image: ${imageUrl}`);
+          
+          const imageResponse = await firstValueFrom(
+            this.httpService.get(imageUrl, { 
+              responseType: 'arraybuffer',
+              timeout: 60000, // Increased timeout
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'image/*,*/*',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive'
+              },
+              maxRedirects: 5
+            })
+          );
+          
+          buffer = Buffer.from(imageResponse.data);
+          this.logger.log(`Successfully fetched carousel image on attempt ${attempt}, size: ${buffer.length} bytes`);
+          break;
+          
+        } catch (fetchError: any) {
+          lastError = fetchError;
+          this.logger.warn(`Carousel attempt ${attempt}/3 failed: ${fetchError.message}`);
+          
+          if (attempt < 3) {
+            const delay = attempt === 1 ? 2000 : 5000;
+            this.logger.log(`Waiting ${delay}ms before retry...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
           }
-        })
-      );
+        }
+      }
       
-      const buffer = Buffer.from(imageResponse.data);
+      if (!buffer!) {
+        throw new Error(`Failed to fetch localhost carousel image after 3 attempts. Last error: ${lastError?.message || 'Unknown error'}`);
+      }
       
-      // Validate buffer
+      // Validate and process buffer
       if (buffer.length === 0) {
-        throw new Error('Retrieved image buffer is empty');
+        throw new Error('Retrieved carousel image buffer is empty');
       }
       
       if (!this.validateImageBuffer(buffer)) {
-        throw new Error('Retrieved data is not a valid image file');
+        throw new Error('Retrieved carousel data is not a valid image file');
       }
       
       const filename = imageUrl.split('/').pop() || 'carousel_image.jpg';
       
-      // Upload to cloud service and get public URL
-      const publicUrl = await this.uploadToCloudinaryAndGetUrl(buffer, filename);
+      // Upload to cloud service with retry
+      let publicUrl: string;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          this.logger.log(`Uploading carousel image to cloud service (attempt ${attempt}/2)...`);
+          publicUrl = await this.uploadToCloudinaryAndGetUrl(buffer, filename);
+          break;
+        } catch (uploadError: any) {
+          this.logger.error(`Carousel cloud upload attempt ${attempt} failed: ${uploadError.message}`);
+          if (attempt === 2) {
+            throw uploadError;
+          }
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
       
       // Now use the public URL with Instagram
-      return await tryCreate(publicUrl);
+      return await tryCreate(publicUrl!);
       
     } catch (err: any) {
       this.logger.error(`Localhost carousel image processing failed: ${err.message}`);
+      
+      // Check if it's a network-related error
+      if (err.code === 'ECONNRESET' || err.code === 'ENOTFOUND' || 
+          err.message.includes('socket hang up') || err.message.includes('timeout') ||
+          err.message.includes('ETIMEDOUT') || err.message.includes('ECONNREFUSED')) {
+        throw new Error(`Network error accessing localhost carousel image. Please ensure the local server is running and accessible. Error: ${err.message}`);
+      }
+      
       throw new Error(`Failed to process localhost carousel image for Instagram: ${err.message}`);
     }
   }
@@ -451,45 +574,168 @@ private async createMediaObjectWithCloudUpload(
     try {
       this.logger.log(`Processing localhost image for Instagram: ${imageUrl}`);
       
-      // Fetch the image from localhost
-      const imageResponse = await firstValueFrom(
-        this.httpService.get(imageUrl, { 
-          responseType: 'arraybuffer',
-          timeout: 30000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'image/*,*/*',
-            'Cache-Control': 'no-cache'
+      let buffer: Buffer;
+      let lastError: any;
+      let workingUrl = imageUrl;
+      
+      // Build comprehensive URL list based on your actual static serving configuration
+      const urlsToTry: string[] = [imageUrl];
+      
+      // Extract filename and thread info from the original URL
+      const urlParts = imageUrl.split('/');
+      const extractedFilename = urlParts.pop();
+      const threadFolder = urlParts.find(part => part.startsWith('thread_'));
+      
+      if (extractedFilename) {
+        const baseUrl = 'http://localhost:3001';
+        
+        // Add alternative URLs based on your static serving setup
+        // Your main.ts serves captures directory at /media route
+        const alternativeUrls = [
+          // Direct filename in media root (maps to captures folder)
+          `${baseUrl}/media/${extractedFilename}`,
+          // With thread folder structure
+          threadFolder ? `${baseUrl}/media/${threadFolder}/${extractedFilename}` : null,
+          // Fallback patterns
+          `${baseUrl}/captures/${extractedFilename}`,
+          threadFolder ? `${baseUrl}/captures/${threadFolder}/${extractedFilename}` : null,
+        ];
+        
+        // Filter out null values and add to urlsToTry
+        alternativeUrls.forEach(url => {
+          if (url) {
+            urlsToTry.push(url);
           }
-        })
-      );
-      
-      const buffer = Buffer.from(imageResponse.data);
-      
-      // Validate buffer
-      if (buffer.length === 0) {
-        throw new Error('Retrieved image buffer is empty');
+        });
       }
       
-      if (!this.validateImageBuffer(buffer)) {
-        throw new Error('Retrieved data is not a valid image file');
+      // Try each URL with retries
+      for (let urlIndex = 0; urlIndex < urlsToTry.length; urlIndex++) {
+        const currentUrl = urlsToTry[urlIndex];
+        let urlWorked = false;
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            this.logger.log(`Attempt ${attempt}/3 to fetch localhost image (URL ${urlIndex + 1}): ${currentUrl}`);
+            
+            const imageResponse = await firstValueFrom(
+              this.httpService.get(currentUrl, { 
+                responseType: 'arraybuffer',
+                timeout: 60000,
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': 'image/*,*/*',
+                  'Cache-Control': 'no-cache',
+                  'Connection': 'keep-alive'
+                },
+                maxRedirects: 5
+              })
+            );
+            
+            buffer = Buffer.from(imageResponse.data);
+            this.logger.log(`Successfully fetched image on attempt ${attempt} from URL: ${currentUrl}, size: ${buffer.length} bytes`);
+            workingUrl = currentUrl;
+            urlWorked = true;
+            break;
+            
+          } catch (fetchError: any) {
+            lastError = fetchError;
+            const status = fetchError.response?.status;
+            
+            this.logger.warn(`URL ${urlIndex + 1}, Attempt ${attempt}/3 failed: ${fetchError.message} (Status: ${status})`);
+            
+            // If it's a 404, try next URL instead of retrying same URL
+            if (status === 404) {
+              break; // Break inner loop, try next URL
+            }
+            
+            if (attempt < 3) {
+              const delay = attempt === 1 ? 1000 : 2000;
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        }
+        
+        if (urlWorked && buffer) {
+          break; // Found working URL, exit outer loop
+        }
       }
       
-      const filename = imageUrl.split('/').pop() || 'image.jpg';
+      if (!buffer!) {
+        throw new Error(`Failed to fetch localhost image after trying all URLs: ${urlsToTry.join(', ')}. Last error: ${lastError?.message}`);
+      }
       
-      // Upload to cloud service and get public URL
-      const publicUrl = await this.uploadToCloudinaryAndGetUrl(buffer, filename);
+      // Process and validate the buffer
+      const processedBuffer = await this.processImageBuffer(buffer);
       
-      // Now use the public URL with Instagram
-      return await tryCreate(publicUrl);
+      const finalFilename = workingUrl.split('/').pop() || 'image.jpg';
+      
+      // Upload to cloud service with retry logic
+      let publicUrl: string;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          this.logger.log(`Uploading to cloud service (attempt ${attempt}/2)...`);
+          publicUrl = await this.uploadToCloudinaryAndGetUrl(processedBuffer, finalFilename);
+          break;
+        } catch (uploadError: any) {
+          this.logger.error(`Cloud upload attempt ${attempt} failed: ${uploadError.message}`);
+          if (attempt === 2) {
+            throw new Error(`Failed to upload image to cloud service after 2 attempts: ${uploadError.message}`);
+          }
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+      
+      // Now use the public URL with Instagram - with retry logic for API calls
+      this.logger.log(`Creating Instagram media with Cloudinary URL: ${publicUrl}`);
+      
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          return await tryCreate(publicUrl!);
+        } catch (instagramError: any) {
+          this.logger.warn(`Instagram API attempt ${attempt}/3 failed: ${instagramError.message}`);
+          
+          // Check if it's a network/timeout error
+          if (instagramError.code === 'ECONNRESET' || 
+              instagramError.code === 'ETIMEDOUT' ||
+              instagramError.message?.includes('socket hang up') ||
+              instagramError.message?.includes('timeout')) {
+            
+            if (attempt < 3) {
+              const delay = attempt * 2000; // 2s, 4s delays
+              this.logger.log(`Network error with Instagram API, retrying in ${delay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+          }
+          
+          // For non-network errors or final attempt, throw immediately
+          throw new Error(`Instagram API error: ${instagramError.message}`);
+        }
+      }
       
     } catch (err: any) {
-      this.logger.error(`Localhost image processing failed: ${err.message}`);
-      throw new Error(`Failed to process localhost image for Instagram: ${err.message}`);
+      this.logger.error(`Failed to process localhost image for Instagram: ${err.message}`);
+      
+      // More specific error categorization
+      if (err.message.includes('Failed to fetch localhost image')) {
+        throw new Error(`Image file not accessible: ${err.message}`);
+      }
+      
+      if (err.message.includes('Failed to upload image to cloud service')) {
+        throw new Error(`Cloud upload failed: ${err.message}`);
+      }
+      
+      if (err.message.includes('Instagram API error')) {
+        throw new Error(`Instagram API error: ${err.message}`);
+      }
+      
+      // Generic fallback
+      throw new Error(`Failed to publish localhost image to Instagram: ${err.message}`);
     }
   }
 
-  // For public URLs - existing logic
+  // For public URLs - existing logic with fallback handling
   try {
     this.logger.log(`Creating IG media with original image (no crop): ${imageUrl}`);
     return await tryCreate(imageUrl);
@@ -497,30 +743,43 @@ private async createMediaObjectWithCloudUpload(
     this.logger.error(`Original URL failed:`, error.response?.data);
     
     if (this.isAspectRatioError(error)) {
-      this.logger.warn(`Original image rejected for aspect ratio. Retrying with padded IG-safe URL...`);
+      this.logger.warn(`Original image rejected for aspect ratio. Retrying with padded IG-safe URLs...`);
 
-      const squarePadded = this.buildIgSafeUrl(imageUrl, 'square');
-      this.logger.log(`Retry (square padded): ${squarePadded}`);
-      try {
-        return await tryCreate(squarePadded);
-      } catch {
-        const landscapePadded = this.buildIgSafeUrl(imageUrl, 'landscape');
-        this.logger.log(`Retry (landscape padded 1.91:1): ${landscapePadded}`);
+      const fallbackUrls = [
+        { name: 'square', url: this.buildIgSafeUrl(imageUrl, 'square') },
+        { name: 'landscape', url: this.buildIgSafeUrl(imageUrl, 'landscape') },
+        { name: 'portrait', url: this.buildIgSafeUrl(imageUrl, 'portrait') },
+        { name: 'weserv-square', url: this.buildWeservUrl(imageUrl, 'square') },
+        { name: 'weserv-landscape', url: this.buildWeservUrl(imageUrl, 'landscape') }
+      ];
+
+      let lastError: any;
+      for (const fallback of fallbackUrls) {
         try {
-          return await tryCreate(landscapePadded);
-        } catch {
-          const portraitPadded = this.buildIgSafeUrl(imageUrl, 'portrait');
-          this.logger.log(`Retry (portrait padded 4:5): ${portraitPadded}`);
-          return await tryCreate(portraitPadded);
+          this.logger.log(`Retry (${fallback.name}): ${fallback.url}`);
+          return await tryCreate(fallback.url);
+        } catch (err: any) {
+          this.logger.warn(`${fallback.name} fallback failed: ${err.response?.data?.error?.message || err.message}`);
+          lastError = err;
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
+      
+      throw new Error(`All aspect ratio fallbacks failed. Last error: ${lastError?.response?.data?.error?.message || lastError?.message}`);
     }
 
     this.logger.warn(`Create media failed (non-aspect issue). Trying square padded once...`);
-    const padded = this.buildIgSafeUrl(imageUrl, 'square');
-    return await tryCreate(padded);
+    try {
+      const padded = this.buildIgSafeUrl(imageUrl, 'square');
+      return await tryCreate(padded);
+    } catch (fallbackError: any) {
+      const weservUrl = this.buildWeservUrl(imageUrl, 'square');
+      this.logger.log(`Final fallback attempt with weserv: ${weservUrl}`);
+      return await tryCreate(weservUrl);
+    }
   }
 }
+
 private async createCarouselMediaObject(
   instagramAccountId: string,
   imageUrl: string,
@@ -715,33 +974,28 @@ async getInstagramAccountInfo(instagramAccountId: string, accessToken: string): 
     }
   }
 
-  private buildIgSafeUrl(
-    originalUrl: string,
-    mode: 'square' | 'portrait' | 'landscape' = 'square'
-  ): string {
-    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+private buildIgSafeUrl(
+  originalUrl: string,
+  mode: 'square' | 'portrait' | 'landscape' = 'square'
+): string {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
 
-    if (cloudName) {
-      const tx =
-        mode === 'portrait'
-          ? 'c_pad,g_auto,b_auto:predominant,ar_4:5,w_1080,h_1350,f_jpg,q_auto:good,e_improve'
-          : mode === 'landscape'
-            ? 'c_pad,g_auto,b_auto:predominant,ar_1.91,w_1080,h_566,f_jpg,q_auto:good,e_improve'
-            : 'c_pad,g_auto,b_auto:predominant,ar_1:1,w_1080,h_1080,f_jpg,q_auto:good,e_improve';
+  if (cloudName) {
+    // More robust Cloudinary transformations
+    const tx = mode === 'portrait'
+      ? 'c_pad,g_center,b_white,ar_4:5,w_1080,h_1350,f_jpg,q_auto:good'
+      : mode === 'landscape'
+        ? 'c_pad,g_center,b_white,ar_1.91:1,w_1080,h_566,f_jpg,q_auto:good'
+        : 'c_pad,g_center,b_white,ar_1:1,w_1080,h_1080,f_jpg,q_auto:good';
 
-      return `https://res.cloudinary.com/${cloudName}/image/fetch/${tx}/${encodeURIComponent(originalUrl)}`;
-    }
-
-    const noProto = originalUrl.replace(/^https?:\/\//i, '');
-    const dims =
-      mode === 'portrait'
-        ? 'w=1080&h=1350'
-        : mode === 'landscape'
-          ? 'w=1080&h=566'
-          : 'w=1080&h=1080';
-
-    return `https://images.weserv.nl/?url=${encodeURIComponent(noProto)}&${dims}&fit=contain&bg=ffffff&output=jpg&dpr=2`;
+    // Double encode the URL to handle special characters
+    const encodedUrl = encodeURIComponent(encodeURIComponent(originalUrl));
+    return `https://res.cloudinary.com/${cloudName}/image/fetch/${tx}/${encodedUrl}`;
   }
+
+  // Fallback to weserv
+  return this.buildWeservUrl(originalUrl, mode);
+}
 
   private isAspectRatioError(err: any): boolean {
     const e = err?.response?.data?.error || err;
